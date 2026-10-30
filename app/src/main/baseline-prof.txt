@@ -1,0 +1,6 @@
+HSPLcom/coara/oldbrowser/MainActivity**->**(**)**
+HSPLcom/coara/oldbrowser/BrowserApplication;->**(**)**
+HSPLcom/coara/oldbrowser/util/**->**(**)**
+HSPLcom/coara/oldbrowser/webview/**->**(**)**
+HSPLcom/coara/oldbrowser/plugin/PluginManager;->**(**)**
+HSPLcom/coara/oldbrowser/plugin/PluginRuntime;->**(**)**
