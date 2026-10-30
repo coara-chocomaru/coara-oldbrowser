@@ -1,6 +1,5 @@
 (function(){
 var B=window["%BRIDGE%"];
-var T="%TOKEN%";
 var EXP=%EXPECTED%;
 if(!B||!EXP.length)return;
 var isTop=false;
@@ -23,7 +22,7 @@ if(e.excludes.length&&rx(e.excludes,u))continue;
 if(!rx(e.matches,u))continue;
 if(!rs[e.key]){
 try{
-B.invoke(T,e.id,"report","load","プラグインのスクリプトが読み込まれませんでした(構文エラーの可能性)",JSON.stringify({url:u,stack:""}));
+B.invoke(e.token,e.id,"report","load","プラグインのスクリプトが読み込まれませんでした(構文エラーの可能性)",JSON.stringify({url:u,stack:""}));
 }catch(x){}
 }
 }
