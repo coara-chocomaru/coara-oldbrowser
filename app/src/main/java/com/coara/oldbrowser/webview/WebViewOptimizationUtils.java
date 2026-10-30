@@ -1,0 +1,323 @@
+package com.coara.oldbrowser.webview;
+
+import android.os.Build;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+
+import com.coara.oldbrowser.R;
+
+import org.json.JSONObject;
+
+
+public final class WebViewOptimizationUtils {
+    private WebViewOptimizationUtils() {}
+
+    public static void installNativeBridgeToken(WebView webView, String token) {
+        if (webView == null || token == null || token.length() < 32 || token.length() > 128) {
+            return;
+        }
+        webView.setTag(R.id.native_bridge_token, token);
+        String script = nativeBridgeTokenScript(token);
+        try {
+            DocumentScripts.add(webView, script, (String[]) null, false, true);
+        } catch (Throwable ignored) {
+        }
+        try {
+            webView.evaluateJavascript(script, null);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void refreshNativeBridgeToken(WebView webView) {
+        if (webView == null) {
+            return;
+        }
+        Object value = webView.getTag(R.id.native_bridge_token);
+        if (!(value instanceof String)) {
+            return;
+        }
+        try {
+            webView.evaluateJavascript(nativeBridgeTokenScript((String) value), null);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String nativeBridgeTokenScript(String token) {
+        return "(function(){try{if(window.top!==window)return;var v=" + JSONObject.quote(token)
+                + ";var d=Object.getOwnPropertyDescriptor(window,'__coaraNativeBridgeToken');"
+                + "if(d){if(d.value!==v)return;return;}Object.defineProperty(window,'__coaraNativeBridgeToken',"
+                + "{value:v,writable:false,configurable:false,enumerable:false});}catch(e){}})();";
+    }
+
+    public static void applyForceDark(WebSettings settings, boolean enabled) {
+        if (settings != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            settings.setForceDark(enabled ? WebSettings.FORCE_DARK_ON : WebSettings.FORCE_DARK_OFF);
+        }
+    }
+
+    public static void enableSafeBrowsing(WebSettings settings) {
+        if (settings != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            settings.setSafeBrowsingEnabled(true);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    public static void applyOptimizedSettings(WebSettings settings, boolean darkModeEnabled) {
+        settings.setJavaScriptEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(true);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setAllowUniversalAccessFromFileURLs(false);
+        settings.setDomStorageEnabled(true);
+        settings.setGeolocationEnabled(false);
+        settings.setLoadWithOverviewMode(true);
+        settings.setUseWideViewPort(true);
+        settings.setTextZoom(100);
+        settings.setDisplayZoomControls(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setSupportZoom(false);
+        settings.setSupportMultipleWindows(true);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setMediaPlaybackRequiresUserGesture(true);
+        settings.setDefaultTextEncodingName("UTF-8");
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            settings.setOffscreenPreRaster(false);
+        }
+
+        settings.setNeedInitialFocus(false);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            settings.setLayoutAlgorithm(WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING);
+        }
+        applyForceDark(settings, darkModeEnabled);
+    }
+
+    private static final String CLIENT_COMPAT_SCRIPT = "(function(){try{"
+            + "if(window.chrome)return;"
+            + "var f=function(){return{};};"
+            + "Object.defineProperty(window,'chrome',{value:{app:{isInstalled:false},csi:f,loadTimes:f},configurable:true,enumerable:true,writable:true});"
+            + "}catch(e){}})();";
+
+    public static void installClientCompat(WebView webView) {
+        if (webView == null) {
+            return;
+        }
+        try {
+            DocumentScripts.add(webView, CLIENT_COMPAT_SCRIPT, (String[]) null, false, true);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void installDownloadHints(WebView webView) {
+        if (webView == null) {
+            return;
+        }
+        String js = "javascript:(function(){" +
+                "try{" +
+                "if(window.__coaraDownloadHintInstalled)return;" +
+                "window.__coaraDownloadHintInstalled=true;" +
+                "var seen={};" +
+                "var remember=function(a,once){" +
+                "try{" +
+                "if(!a)return;" +
+                "var n=a.getAttribute('download')||a.getAttribute('data-filename')||a.getAttribute('data-file-name')||a.getAttribute('data-download-name')||a.getAttribute('data-name');" +
+                "var h=a.href||a.getAttribute('href')||a.getAttribute('data-url')||a.getAttribute('data-href')||a.getAttribute('data-download-url');" +
+                "if(n&&h&&window.BlobDownloader){" +
+                "if(once){var k=h+'|'+n;if(seen[k])return;seen[k]=1;}" +
+                "window.BlobDownloader.rememberDownloadHint(h,n);" +
+                "}" +
+                "}catch(e){}" +
+                "};" +
+                "var scan=function(){" +
+                "try{" +
+                "var list=document.querySelectorAll('a[download]');" +
+                "for(var i=0;i<list.length;i++)remember(list[i],true);" +
+                "}catch(e){}" +
+                "};" +
+                "var timer=0;" +
+                "var schedule=function(){" +
+                "if(timer)return;" +
+                "timer=setTimeout(function(){timer=0;scan();},800);" +
+                "};" +
+                "document.addEventListener('click',function(e){" +
+                "try{" +
+                "var a=e.target;" +
+                "var depth=0;" +
+                "while(a&&a.tagName!=='A'&&depth++<8)a=a.parentElement;" +
+                "remember(a,false);" +
+                "}catch(ex){}" +
+                "},true);" +
+                "scan();" +
+                "if(window.MutationObserver){" +
+                "new MutationObserver(function(ms){" +
+                "if(timer)return;" +
+                "for(var i=0;i<ms.length&&i<40;i++){" +
+                "var an=ms[i].addedNodes;" +
+                "for(var j=0;j<an.length;j++){" +
+                "var nd=an[j];" +
+                "if(nd.nodeType===1&&((nd.matches&&nd.matches('a[download]'))||(nd.querySelector&&nd.querySelector('a[download]')))){schedule();return;}" +
+                "}" +
+                "}" +
+                "}).observe(document.documentElement||document,{subtree:true,childList:true});" +
+                "}" +
+                "}catch(e){}" +
+                "})();";
+        try {
+            webView.evaluateJavascript(js, null);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static final String SPA_HOOK_JS = "var sendNative=function(type,value){try{if(window.CoaraNativeBridge&&typeof window.CoaraNativeBridge.postMessage==='function'){var m={type:type};if(type==='url')m.url=value;else m.detected=value;window.CoaraNativeBridge.postMessage(JSON.stringify(m));return;}}catch(e){}try{if(type==='url')AndroidBridge.onUrlChange(value,window.__coaraNativeBridgeToken);else AndroidBridge.onSpaDetected(value,window.__coaraNativeBridgeToken);}catch(e){}};"
+            + "var hook=function(first){try{"
+            + "if(!window.__coaraHistoryHooked){"
+            + "window.__coaraHistoryHooked=true;"
+            + "window.__coaraLastHref=location.href;"
+            + "var nuc=function(force){"
+            + "var href=location.href;"
+            + "if(!force&&href===window.__coaraLastHref)return;"
+            + "window.__coaraLastHref=href;"
+            + "sendNative('url',href);"
+            + "};"
+            + "var ps=history.pushState;"
+            + "history.pushState=function(){var r=ps.apply(history,arguments);nuc(true);return r;};"
+            + "var rs=history.replaceState;"
+            + "history.replaceState=function(){var r=rs.apply(history,arguments);nuc(true);return r;};"
+            + "window.addEventListener('popstate',function(){nuc(true);});"
+            + "window.addEventListener('hashchange',function(){nuc(true);});"
+            + "if(first)nuc(true);"
+            + "}else{"
+            + "sendNative('url',location.href);"
+            + "}"
+            + "}catch(hookErr){}};";
+
+    private static final String SPA_PROBE_JS = "javascript:(function(){"
+            + SPA_HOOK_JS
+            + "if(window.__coaraSpaDetected===true){"
+            + "sendNative('spa',true);"
+            + "hook(false);"
+            + "return;"
+            + "}"
+            + "var s=false;"
+            + "try{"
+            + "if(!s&&document.querySelector('[data-reactroot]'))s=true;"
+            + "if(!s&&document.getElementById('__next'))s=true;"
+            + "if(!s&&document.querySelector('[data-v-app]'))s=true;"
+            + "if(!s&&document.getElementById('__nuxt'))s=true;"
+            + "if(!s&&document.querySelector('[ng-version]'))s=true;"
+            + "if(!s){"
+            + "var root=document.getElementById('root')||document.getElementById('app');"
+            + "if(root&&root.childElementCount>3)s=true;"
+            + "}"
+            + "if(!s){"
+            + "var scr=document.querySelectorAll('script[src]'),bc=0;"
+            + "for(var j=0;j<scr.length;j++){"
+            + "var src=scr[j].getAttribute('src')||'';"
+            + "if(src.indexOf('.chunk.js')>-1||src.indexOf('.bundle.js')>-1"
+            + "||src.indexOf('/chunk.')>-1||src.indexOf('/bundle.')>-1)bc++;"
+            + "if(bc>=2){s=true;break;}"
+            + "}"
+            + "}"
+            + "if(!s){"
+            + "try{"
+            + "if(history.pushState.toString().indexOf('native code')===-1)s=true;"
+            + "}catch(pe){}"
+            + "}"
+            + "if(!s){"
+            + "var cs=document.querySelectorAll('canvas');"
+            + "for(var i=0;i<cs.length;i++){"
+            + "if(cs[i].offsetWidth>100&&cs[i].offsetHeight>100){s=true;break;}"
+            + "}"
+            + "}"
+            + "if(!s){"
+            + "try{"
+            + "var bs=window.getComputedStyle(document.body);"
+            + "if(bs.overflow==='hidden'||bs.overflowY==='hidden')s=true;"
+            + "}catch(ce){}"
+            + "}"
+            + "}catch(e){}"
+            + "hook(true);"
+            + "if(!s&&'serviceWorker' in navigator){"
+            + "try{"
+            + "navigator.serviceWorker.getRegistrations().then(function(r){"
+            + "if(r&&r.length>0){try{window.__coaraSpaDetected=true;}catch(se){}sendNative('spa',true);}"
+            + "}).catch(function(){});"
+            + "}catch(swe){}"
+            + "}"
+            + "if(s){try{window.__coaraSpaDetected=true;}catch(se){}}"
+            + "sendNative('spa',s);"
+            + "})();";
+
+    public static void injectSpaProbe(WebView webView) {
+        webView.evaluateJavascript(SPA_PROBE_JS, null);
+    }
+
+    public static void injectLazyLoading(WebView webView) {
+        String js = "javascript:(function(){"
+                + "try{if(window.__coaraLazyLoadingApplied)return;window.__coaraLazyLoadingApplied=true;}catch(e){}"
+                + "var PH='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';"
+                + "var imgs=document.querySelectorAll('img[src^=\"https://i.ytimg.com/\"]:not([data-lazy-loaded])');"
+                + "if(imgs.length===0)return;"
+                + "imgs.forEach(function(img){"
+                + "img.setAttribute('data-lazy-loaded','true');"
+                + "img.setAttribute('loading','lazy');"
+                + "if(img.hasAttribute('src')){"
+                + "img.setAttribute('data-src',img.src);"
+                + "img.src=PH;"
+                + "img.style.opacity='0';"
+                + "img.style.transition='opacity 0.25s ease';"
+                + "if(!img.style.transform)img.style.transform='translateZ(0)';"
+                + "}"
+                + "});"
+                + "if('IntersectionObserver' in window){"
+                + "var ob=new IntersectionObserver(function(entries){"
+                + "entries.forEach(function(e){"
+                + "if(e.isIntersecting){"
+                + "var img=e.target;"
+                + "if(img.dataset.src){"
+                + "img.src=img.dataset.src;"
+                + "img.removeAttribute('data-src');"
+                + "img.onload=function(){img.style.opacity='1';};"
+                + "img.onerror=function(){console.warn('Lazy:'+img.src);};"
+                + "}"
+                + "ob.unobserve(img);"
+                + "}"
+                + "});"
+                + "},{root:null,rootMargin:'200px 0px',threshold:0});"
+                + "imgs.forEach(function(img){ob.observe(img);});"
+                + "}else{"
+                + "function inVP(el){"
+                + "var r=el.getBoundingClientRect();"
+                + "return r.top<=(window.innerHeight||document.documentElement.clientHeight)+200&&r.bottom>=0;"
+                + "}"
+                + "function load(){"
+                + "imgs.forEach(function(img){"
+                + "if(img.dataset.src&&inVP(img)){"
+                + "img.src=img.dataset.src;"
+                + "img.removeAttribute('data-src');"
+                + "img.onload=function(){img.style.opacity='1';};"
+                + "img.onerror=function(){console.warn('Lazy:'+img.src);};"
+                + "}"
+                + "});"
+                + "}"
+                + "['scroll','resize','load'].forEach(function(ev){"
+                + "window.addEventListener(ev,load,{passive:true});"
+                + "});"
+                + "load();"
+                + "}"
+                + "})();";
+        webView.evaluateJavascript(js, null);
+    }
+
+    public static String sanitizeUserAgent(String userAgent) {
+        if (userAgent == null || userAgent.isEmpty()) {
+            return userAgent;
+        }
+        String sanitized = userAgent.replace("; wv)", ")");
+        sanitized = sanitized.replace(" Version/4.0", "");
+        return sanitized;
+    }
+}

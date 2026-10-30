@@ -1,1 +1,586 @@
+package com.coara.oldbrowser.webview;
 
+import android.app.Notification;
+import com.coara.oldbrowser.util.NotificationHelper;
+import android.app.DownloadManager;
+import android.app.PendingIntent;
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Environment;
+import android.os.SystemClock;
+import android.util.Base64;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import android.widget.Toast;
+
+
+import com.coara.oldbrowser.BrowserApplication;
+import com.coara.oldbrowser.DownloadOpenActivity;
+import com.coara.oldbrowser.DownloadHistoryManager;
+import com.coara.oldbrowser.util.DownloadSupport;
+import com.coara.oldbrowser.util.ExternalDownloadTabTracker;
+import com.coara.oldbrowser.util.DownloadHintStore;
+import com.coara.oldbrowser.util.PublicStorageWriter;
+import com.coara.oldbrowser.util.UiThread;
+
+import java.util.Map;
+import java.lang.ref.WeakReference;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class BlobDownloadBridge {
+    private static final AtomicInteger NOTIFICATION_ID_SEQ = new AtomicInteger(20000);
+    private static final AtomicInteger SESSION_ID_SEQ = new AtomicInteger(1);
+    private static final AtomicLong LAST_ERROR_TOAST_AT = new AtomicLong(Long.MIN_VALUE);
+    private static final long NOTIFY_INTERVAL_MS = 500;
+    private static final int MAX_BASE64_CHUNK_LENGTH = 1024 * 1024;
+    private static final int MAX_ACTIVE_SESSIONS = 6;
+    private static final int MAX_PENDING_CHUNKS_PER_SESSION = 4;
+    private static final int MAX_TOKEN_LENGTH = 128;
+    private static final long MAX_BLOB_BYTES = 8L * 1024 * 1024 * 1024;
+    private static final long MIN_FREE_SPACE_BYTES = 64L * 1024 * 1024;
+    private static final long AUTHORIZATION_WINDOW_MS = 60_000L;
+    private static final long START_WINDOW_MS = 10_000L;
+    private static final int START_LIMIT = 8;
+    private final java.util.concurrent.atomic.AtomicLong startWindowBegin = new java.util.concurrent.atomic.AtomicLong();
+    private final AtomicInteger startCount = new AtomicInteger();
+
+    private final Context context;
+    private final WeakReference<WebView> owner;
+    private final Map<String, Long> authorizedDownloads = new ConcurrentHashMap<>();
+    private final Map<String, Session> sessions = new ConcurrentHashMap<>();
+    private final Map<String, CloseRequest> closeRequests = new ConcurrentHashMap<>();
+
+    private static final class CloseRequest {
+        final WeakReference<Activity> activity;
+        final WeakReference<WebView> webView;
+        final String downloadUrl;
+        final Runnable closeAction;
+        CloseRequest(Activity activity, WebView webView, String downloadUrl, Runnable closeAction) {
+            this.activity = new WeakReference<>(activity);
+            this.webView = new WeakReference<>(webView);
+            this.downloadUrl = downloadUrl;
+            this.closeAction = closeAction;
+        }
+    }
+
+    public BlobDownloadBridge(Context context, WebView owner) {
+        this.context = context.getApplicationContext();
+        this.owner = new WeakReference<>(owner);
+    }
+
+    public synchronized boolean authorizeDownload(String token) {
+        if (DownloadSupport.isBlank(token) || token.length() > MAX_TOKEN_LENGTH) {
+            return false;
+        }
+        long now = SystemClock.uptimeMillis();
+        for (Map.Entry<String, Long> entry : new java.util.ArrayList<>(authorizedDownloads.entrySet())) {
+            if (now - entry.getValue() > AUTHORIZATION_WINDOW_MS) {
+                authorizedDownloads.remove(entry.getKey(), entry.getValue());
+            }
+        }
+        if (authorizedDownloads.size() + sessions.size() >= MAX_ACTIVE_SESSIONS) {
+            return false;
+        }
+        return authorizedDownloads.putIfAbsent(token, now) == null;
+    }
+
+    public void cancelAuthorization(String token) {
+        if (token != null) {
+            authorizedDownloads.remove(token);
+        }
+    }
+
+    private boolean isAllowedPage() {
+        WebView view = owner.get();
+        return view != null && BridgeGuard.isWebPage(view.getUrl());
+    }
+
+    private boolean isAllowedSessionPage(Session session) {
+        WebView view = owner.get();
+        return session != null && view != null
+                && BridgeGuard.sameOrigin(session.origin, view.getUrl());
+    }
+
+    private boolean consumeAuthorization(String token) {
+        if (DownloadSupport.isBlank(token)) {
+            return false;
+        }
+        Long createdAt = authorizedDownloads.remove(token);
+        if (createdAt == null) {
+            return false;
+        }
+        long age = SystemClock.uptimeMillis() - createdAt;
+        return age >= 0L && age <= AUTHORIZATION_WINDOW_MS;
+    }
+
+    private long availableWritableBytes() {
+        try {
+            java.io.File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
+                return 0L;
+            }
+            long free = dir.getUsableSpace();
+            return Math.max(0L, free - MIN_FREE_SPACE_BYTES);
+        } catch (Exception e) {
+            return 0L;
+        }
+    }
+
+    public void registerCloseAfterDownload(String token, Activity activity, WebView webView,
+                                           String downloadUrl, Runnable closeAction) {
+        if (DownloadSupport.isBlank(token) || activity == null || webView == null || closeAction == null) {
+            return;
+        }
+        if (token.length() > MAX_TOKEN_LENGTH || downloadUrl == null || downloadUrl.length() > 8192) {
+            return;
+        }
+        synchronized (closeRequests) {
+            if (closeRequests.size() >= MAX_ACTIVE_SESSIONS && !closeRequests.containsKey(token)) {
+                return;
+            }
+            closeRequests.put(token, new CloseRequest(activity, webView, downloadUrl, closeAction));
+        }
+    }
+
+    public void shutdown() {
+        for (Map.Entry<String, Session> entry : new java.util.ArrayList<>(sessions.entrySet())) {
+            Session session = entry.getValue();
+            if (session != null) {
+                try {
+                    session.terminalQueued = true;
+                    session.pendingChunks.release(MAX_PENDING_CHUNKS_PER_SESSION);
+                    session.writer.shutdownNow();
+                } catch (Exception ignored) {
+                }
+                PublicStorageWriter.abort(context, session.target);
+            }
+        }
+        sessions.clear();
+        closeRequests.clear();
+        authorizedDownloads.clear();
+    }
+
+    private static final class Session {
+        volatile PublicStorageWriter.Target target;
+        volatile long downloadId;
+        volatile String fileName;
+        volatile String origin;
+        volatile long totalSize;
+        volatile long maxWritableBytes;
+        volatile long bytesWritten;
+        volatile int notificationId;
+        volatile long lastNotifyTime;
+        volatile boolean failed;
+        volatile boolean completed;
+        volatile boolean terminalQueued;
+        final Semaphore pendingChunks = new Semaphore(MAX_PENDING_CHUNKS_PER_SESSION, true);
+        final ExecutorService writer = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "CoaraBlobWriter-" + SESSION_ID_SEQ.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    @JavascriptInterface
+    public void rememberDownloadHint(String url, String fileName) {
+        if (!isAllowedPage() || DownloadSupport.isBlank(url) || url.length() > 8192
+                || DownloadSupport.isBlank(fileName) || fileName.length() > 512
+                || !BridgeGuard.isWebPage(url)) {
+            return;
+        }
+        DownloadHintStore.remember(url, fileName);
+    }
+
+    @JavascriptInterface
+    public void onBlobStart(String token, String fileName, String mimeType, String totalSizeStr) {
+        onBlobStart(token, fileName, mimeType, totalSizeStr, null);
+    }
+
+    @JavascriptInterface
+    public synchronized void onBlobStart(String token, String fileName, String mimeType, String totalSizeStr,
+                            String contentDisposition) {
+        if (!isAllowedPage() || !consumeAuthorization(token)
+                || DownloadSupport.isBlank(token) || token.length() > MAX_TOKEN_LENGTH
+                || sessions.containsKey(token) || !allowStart()
+                || sessions.size() >= MAX_ACTIVE_SESSIONS) {
+            return;
+        }
+        Session session = new Session();
+        WebView ownerView = owner.get();
+        session.origin = ownerView == null ? null : ownerView.getUrl();
+        if (!BridgeGuard.isWebPage(session.origin)) {
+            session.failed = true;
+            session.writer.shutdownNow();
+            return;
+        }
+        try {
+            long totalSize = 0;
+            try {
+                totalSize = Long.parseLong(totalSizeStr);
+            } catch (Exception ignored) {
+            }
+            if (totalSize < 0L) {
+                totalSize = 0L;
+            }
+            String boundedFileName = fileName;
+            if (boundedFileName != null && boundedFileName.length() > 512) {
+                boundedFileName = boundedFileName.substring(0, 512);
+            }
+            String boundedMimeType = mimeType;
+            if (boundedMimeType != null && boundedMimeType.length() > 256) {
+                boundedMimeType = boundedMimeType.substring(0, 256);
+            }
+            String boundedDisposition = contentDisposition;
+            if (boundedDisposition != null && boundedDisposition.length() > 4096) {
+                boundedDisposition = boundedDisposition.substring(0, 4096);
+            }
+            String effectiveMime = DownloadSupport.normalizeMimeType(boundedMimeType, null);
+            String effectiveName = DownloadSupport.resolveFileName(
+                    "https://blob.invalid/" + (DownloadSupport.isBlank(boundedFileName) ? "download" : boundedFileName),
+                    boundedDisposition, effectiveMime);
+            if (DownloadSupport.isBlank(effectiveName) || "download".equalsIgnoreCase(effectiveName)) {
+                effectiveName = DownloadSupport.isBlank(boundedFileName) ? DownloadSupport.buildTimestampFileName("blob_download_", effectiveMime) : boundedFileName;
+            }
+            effectiveName = DownloadSupport.sanitizeFileName(effectiveName);
+            effectiveName = DownloadSupport.resolveUniqueDownloadFileName(context, effectiveName);
+            long writableBytes = Math.min(MAX_BLOB_BYTES, availableWritableBytes());
+            if (writableBytes <= 0L || totalSize > MAX_BLOB_BYTES || totalSize > writableBytes) {
+                throw new java.io.IOException("insufficient storage");
+            }
+            PublicStorageWriter.Target target = PublicStorageWriter.openDownloadsTarget(context, effectiveName, effectiveMime);
+            session.target = target;
+            session.downloadId = DownloadHistoryManager.nextManualDownloadId();
+            session.fileName = effectiveName;
+            session.totalSize = totalSize;
+            session.maxWritableBytes = writableBytes;
+            session.notificationId = NOTIFICATION_ID_SEQ.incrementAndGet();
+            Session previous = sessions.get(token);
+            if (previous != null && !previous.completed && !previous.failed) {
+                failSession(token, previous);
+            }
+            sessions.put(token, session);
+            DownloadHistoryManager.addDownloadHistory(context, session.downloadId, session.fileName,
+                    target.displayPath, null, null, false);
+            DownloadHistoryManager.updateManualDownload(context, session.downloadId, session.fileName,
+                    target.displayPath, target.localUri, DownloadManager.STATUS_RUNNING, 0, totalSize);
+            postProgressNotification(session);
+        } catch (Exception e) {
+            session.failed = true;
+            sessions.remove(token);
+            closeRequests.remove(token);
+            PublicStorageWriter.abort(context, session.target);
+            session.writer.shutdownNow();
+            postToast("ダウンロード開始に失敗しました");
+        }
+    }
+
+    @JavascriptInterface
+    public void onBlobChunk(String token, String base64Chunk) {
+        if (DownloadSupport.isBlank(token) || token.length() > MAX_TOKEN_LENGTH) {
+            return;
+        }
+        Session session = sessions.get(token);
+        if (session == null || session.failed || session.completed || session.terminalQueued) {
+            return;
+        }
+        if (!isAllowedPage() || !isAllowedSessionPage(session)) {
+            failSession(token, session);
+            return;
+        }
+        if (DownloadSupport.isBlank(base64Chunk) || base64Chunk.length() > MAX_BASE64_CHUNK_LENGTH) {
+            failSession(token, session);
+            return;
+        }
+        try {
+            session.pendingChunks.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        synchronized (session) {
+            if (session.failed || session.completed || session.terminalQueued || sessions.get(token) != session) {
+                session.pendingChunks.release();
+                return;
+            }
+            try {
+                session.writer.execute(() -> {
+                    try {
+                        synchronized (session) {
+                            if (session.failed || session.completed || session.target == null) return;
+                            try {
+                                byte[] data = Base64.decode(base64Chunk, Base64.DEFAULT);
+                                long nextSize = session.bytesWritten + data.length;
+                                if (nextSize < session.bytesWritten || nextSize > session.maxWritableBytes
+                                        || nextSize > MAX_BLOB_BYTES
+                                        || (session.totalSize > 0L && nextSize > session.totalSize)
+                                        || data.length > availableWritableBytes()) {
+                                    throw new java.io.IOException("size exceeded");
+                                }
+                                session.target.outputStream.write(data);
+                                session.bytesWritten = nextSize;
+                                long now = System.currentTimeMillis();
+                                if (now - session.lastNotifyTime >= NOTIFY_INTERVAL_MS) {
+                                    session.lastNotifyTime = now;
+                                    postProgressNotification(session);
+                                    DownloadHistoryManager.updateManualDownload(context, session.downloadId, session.fileName,
+                                            session.target.displayPath, session.target.localUri, DownloadManager.STATUS_RUNNING,
+                                            session.bytesWritten, session.totalSize);
+                                }
+                            } catch (Exception e) {
+                                failSession(token, session);
+                            }
+                        }
+                    } finally {
+                        session.pendingChunks.release();
+                    }
+                });
+            } catch (RuntimeException e) {
+                session.pendingChunks.release();
+                failSession(token, session);
+            }
+        }
+    }
+
+    @JavascriptInterface
+    public void onBlobComplete(String token) {
+        if (DownloadSupport.isBlank(token) || token.length() > MAX_TOKEN_LENGTH) return;
+        Session session = sessions.get(token);
+        if (session == null) {
+            return;
+        }
+        if (!isAllowedPage() || !isAllowedSessionPage(session)) {
+            failSession(token, session);
+            return;
+        }
+        synchronized (session) {
+            if (session.failed || session.completed || session.terminalQueued) {
+                return;
+            }
+            session.terminalQueued = true;
+        }
+        try {
+            session.writer.execute(() -> {
+                synchronized (session) {
+                    if (session.failed || session.completed || session.target == null) {
+                        return;
+                    }
+                    try {
+                        if (session.totalSize > 0L && session.bytesWritten != session.totalSize) {
+                            throw new java.io.IOException("download size mismatch");
+                        }
+                        if (!PublicStorageWriter.finish(context, session.target)) {
+                            throw new java.io.IOException("download finalize failed");
+                        }
+                        session.completed = true;
+                        sessions.remove(token);
+                        session.writer.shutdown();
+                        CloseRequest closeRequest = closeRequests.remove(token);
+                        DownloadHistoryManager.updateManualDownload(context, session.downloadId, session.fileName,
+                                session.target.displayPath, session.target.localUri, DownloadManager.STATUS_SUCCESSFUL,
+                                session.bytesWritten, session.bytesWritten);
+                        postCompleteNotification(session);
+                        scheduleClose(closeRequest);
+                    } catch (Exception e) {
+                        failSession(token, session);
+                    }
+                }
+            });
+        } catch (RuntimeException e) {
+            failSession(token, session);
+        }
+    }
+
+    @JavascriptInterface
+    public void onBlobDownloadError(String errorMessage) {
+        if (!isAllowedPage()) {
+            return;
+        }
+        String m = DownloadSupport.isBlank(errorMessage) ? "unknown" : errorMessage.replaceAll("[\\r\\n\\p{Cntrl}]", " ");
+        if (m.length() > 120) {
+            m = m.substring(0, 120);
+        }
+        postRateLimitedErrorToast("blob ダウンロードエラー: " + m);
+    }
+
+    @JavascriptInterface
+    public void onBlobError(String token, String message) {
+        if (DownloadSupport.isBlank(token) || token.length() > MAX_TOKEN_LENGTH) {
+            if (isAllowedPage()) postRateLimitedErrorToast("ダウンロードに失敗しました");
+            return;
+        }
+        Session session = sessions.get(token);
+        if (session == null) {
+            if (isAllowedPage()) {
+                postRateLimitedErrorToast("ダウンロードに失敗しました");
+            }
+            return;
+        }
+        if (!isAllowedPage() || !isAllowedSessionPage(session)) {
+            failSession(token, session);
+            return;
+        }
+        synchronized (session) {
+            if (session.failed || session.completed || session.terminalQueued) {
+                return;
+            }
+            session.terminalQueued = true;
+        }
+        try {
+            session.writer.execute(() -> failSession(token, session));
+        } catch (RuntimeException e) {
+            failSession(token, session);
+        }
+    }
+
+    private boolean allowStart() {
+        long now = System.currentTimeMillis();
+        long begin = startWindowBegin.get();
+        if (now - begin > START_WINDOW_MS) {
+            if (startWindowBegin.compareAndSet(begin, now)) {
+                startCount.set(0);
+            }
+        }
+        return startCount.incrementAndGet() <= START_LIMIT;
+    }
+
+    private void failSession(String token, Session session) {
+        synchronized (session) {
+            if (session.failed) {
+                return;
+            }
+            session.failed = true;
+            sessions.remove(token);
+            closeRequests.remove(token);
+            PublicStorageWriter.abort(context, session.target);
+            DownloadHistoryManager.updateManualDownload(context, session.downloadId, session.fileName,
+                    session.target != null ? session.target.displayPath : "",
+                    session.target != null ? session.target.localUri : "", DownloadManager.STATUS_FAILED,
+                    session.bytesWritten, session.totalSize);
+            postFailedNotification(session);
+            session.writer.shutdown();
+        }
+        postToast("ダウンロードに失敗しました");
+    }
+
+    private void scheduleClose(CloseRequest request) {
+        if (request == null) {
+            return;
+        }
+        Activity activity = request.activity.get();
+        WebView webView = request.webView.get();
+        if (activity == null || webView == null || request.closeAction == null) {
+            return;
+        }
+        UiThread.postDelayed(() -> {
+            try {
+                if (activity.isFinishing() || (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed())) {
+                    return;
+                }
+                if (ExternalDownloadTabTracker.shouldCloseAfterDownload(webView, request.downloadUrl)) {
+                    request.closeAction.run();
+                }
+            } catch (Exception ignored) {
+            }
+        }, 750L);
+    }
+
+    private void postToast(String message) {
+        UiThread.post(() -> Toast.makeText(context, message, Toast.LENGTH_LONG).show());
+    }
+
+    private void postRateLimitedErrorToast(String message) {
+        long now = SystemClock.uptimeMillis();
+        while (true) {
+            long previous = LAST_ERROR_TOAST_AT.get();
+            if (previous != Long.MIN_VALUE && now - previous < 5000L) {
+                return;
+            }
+            if (LAST_ERROR_TOAST_AT.compareAndSet(previous, now)) {
+                postToast(message);
+                return;
+            }
+        }
+    }
+
+    private void postProgressNotification(Session session) {
+        Notification.Builder builder = NotificationHelper.builder(context, BrowserApplication.DOWNLOAD_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle(session.fileName)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setPriority(Notification.PRIORITY_LOW);
+        if (session.totalSize > 0) {
+            int percent = (int) Math.min(100, (session.bytesWritten * 100) / session.totalSize);
+            builder.setProgress(100, percent, false);
+            builder.setContentText(percent + "%");
+        } else {
+            builder.setProgress(0, 0, true);
+            builder.setContentText(formatBytes(session.bytesWritten));
+        }
+        showNotification(session.notificationId, builder);
+    }
+
+    private void postCompleteNotification(Session session) {
+        Intent intent = new Intent(context, DownloadOpenActivity.class);
+        int completionNotificationId = com.coara.oldbrowser.util.DownloadFallbackManager.completionNotificationId(session.downloadId);
+        intent.putExtra(DownloadOpenActivity.EXTRA_NOTIFICATION_ID, completionNotificationId);
+        intent.putExtra(DownloadOpenActivity.EXTRA_DOWNLOAD_ID, session.downloadId);
+        intent.putExtra(DownloadOpenActivity.EXTRA_LOCAL_URI, session.target == null ? null : session.target.localUri);
+        intent.putExtra(DownloadOpenActivity.EXTRA_FILE_PATH, session.target == null ? null : session.target.displayPath);
+        intent.putExtra(DownloadOpenActivity.EXTRA_FILE_NAME, session.fileName);
+        PendingIntent pendingIntent = PendingIntent.getActivity(context, completionNotificationId, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder builder = NotificationHelper.builder(context, BrowserApplication.DOWNLOAD_COMPLETE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle(session.fileName)
+                .setContentText("ダウンロードを完了しました")
+                .setOngoing(false)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setCategory(Notification.CATEGORY_STATUS)
+                .setContentIntent(pendingIntent)
+                .setPriority(Notification.PRIORITY_DEFAULT);
+        NotificationHelper.manager(context).cancel(session.notificationId);
+        showNotification(completionNotificationId, builder);
+    }
+
+    private void postFailedNotification(Session session) {
+        Notification.Builder builder = NotificationHelper.builder(context, BrowserApplication.DOWNLOAD_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setContentTitle(session.fileName == null ? "ダウンロード" : session.fileName)
+                .setContentText("ダウンロード失敗")
+                .setOngoing(false)
+                .setAutoCancel(true)
+                .setPriority(Notification.PRIORITY_DEFAULT);
+        showNotification(session.notificationId, builder);
+    }
+
+    private void showNotification(int id, Notification.Builder builder) {
+        try {
+            NotificationHelper.manager(context).notify(id, builder.build());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " B";
+        }
+        double kb = bytes / 1024.0;
+        if (kb < 1024) {
+            return String.format(java.util.Locale.getDefault(), "%.1f KB", kb);
+        }
+        double mb = kb / 1024.0;
+        if (mb < 1024) {
+            return String.format(java.util.Locale.getDefault(), "%.1f MB", mb);
+        }
+        double gb = mb / 1024.0;
+        return String.format(java.util.Locale.getDefault(), "%.2f GB", gb);
+    }
+}
