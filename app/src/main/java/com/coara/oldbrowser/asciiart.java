@@ -41,32 +41,18 @@ public class asciiart extends Activity {
 
         selectImageButton.setOnClickListener(v -> pickImageFromStorage());
 
-        convertButton.setOnClickListener(v -> {
-            if (selectedImageUri != null) {
-                try (InputStream imageStream = getContentResolver().openInputStream(selectedImageUri)) {
-                    if (imageStream != null) {
-                        Bitmap bitmap = BitmapFactory.decodeStream(imageStream);
-                        String asciiArt = convertToAscii(bitmap);
-                        asciiTextView.setText(asciiArt);
-                        if (((Switch) findViewById(R.id.saveText)).isChecked()) {
-                            saveAsciiArt(asciiArt, bitmap);
-                        }
-                    } else {
-                        Toast.makeText(this, R.string.cannot_load_image, Toast.LENGTH_SHORT).show();
-                    }
-                } catch (IOException e) {
-                    Toast.makeText(this, R.string.cannot_load_image, Toast.LENGTH_SHORT).show();
-                    e.printStackTrace();
-                }
-            }
-        });
+        convertButton.setOnClickListener(v -> convertSelectedImage());
     }
 
     private void pickImageFromStorage() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.setType("image/*");
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        startActivityForResult(intent, REQUEST_CODE_PICK_IMAGE);
+        try {
+            startActivityForResult(intent, REQUEST_CODE_PICK_IMAGE);
+        } catch (Exception e) {
+            Toast.makeText(this, R.string.cannot_get_image_path, Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override
@@ -88,34 +74,116 @@ public class asciiart extends Activity {
     }
 
     private String getFileName(Uri uri) {
-        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                return cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME));
+        if (uri != null) {
+            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (column >= 0) {
+                        String name = cursor.getString(column);
+                        if (name != null && !name.trim().isEmpty()) {
+                            return name;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
             }
         }
         return getString(R.string.unknown_file);
     }
 
-    private String convertToAscii(Bitmap bitmap) {
-        StringBuilder asciiArt = new StringBuilder();
-        int targetWidth = 200;
-        int targetHeight = bitmap.getHeight() * targetWidth / bitmap.getWidth();
-        Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, false);
-        int[] pixels = new int[targetWidth * targetHeight];
-        resizedBitmap.getPixels(pixels, 0, targetWidth, 0, 0, targetWidth, targetHeight);
-
-        String asciiChars = "@#S%?*+;:,. ";
-
-        for (int y = 0; y < targetHeight; y++) {
-            for (int x = 0; x < targetWidth; x++) {
-                int pixel = pixels[y * targetWidth + x];
-                int gray = (int) (0.2989 * ((pixel >> 16) & 0xFF) + 0.5870 * ((pixel >> 8) & 0xFF) + 0.1140 * (pixel & 0xFF));
-                asciiArt.append(asciiChars.charAt(gray * (asciiChars.length() - 1) / 255));
-            }
-            asciiArt.append("\n");
+    private void convertSelectedImage() {
+        Uri uri = selectedImageUri;
+        if (uri == null) {
+            return;
         }
+        boolean saveText = ((Switch) findViewById(R.id.saveText)).isChecked();
+        boolean saveColor = ((Switch) findViewById(R.id.saveColorSwitch)).isChecked();
+        Bitmap bitmap = null;
+        try {
+            bitmap = decodeSelectedImage(uri, saveColor);
+            if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
+                Toast.makeText(this, R.string.cannot_load_image, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String asciiArt = convertToAscii(bitmap);
+            asciiTextView.setText(asciiArt);
+            if (saveText) {
+                saveAsciiArt(asciiArt, bitmap);
+            }
+        } catch (OutOfMemoryError e) {
+            Toast.makeText(this, R.string.cannot_load_image, Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, R.string.cannot_load_image, Toast.LENGTH_SHORT).show();
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
+        }
+    }
 
-        return asciiArt.toString();
+    private Bitmap decodeSelectedImage(Uri uri, boolean preserveColorDetail) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) {
+                return null;
+            }
+            BitmapFactory.decodeStream(input, null, bounds);
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return null;
+        }
+        int sample = 1;
+        if (preserveColorDetail) {
+            long pixels = (long) bounds.outWidth * (long) bounds.outHeight;
+            while (pixels / ((long) sample * sample) > 16_000_000L && sample < 1 << 15) {
+                sample <<= 1;
+            }
+        } else {
+            while ((bounds.outWidth / sample) > 400 || (bounds.outHeight / sample) > 8000) {
+                sample <<= 1;
+            }
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = Math.max(1, sample);
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        options.inScaled = false;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            return input == null ? null : BitmapFactory.decodeStream(input, null, options);
+        }
+    }
+
+    private String convertToAscii(Bitmap bitmap) {
+        int sourceWidth = bitmap.getWidth();
+        int sourceHeight = bitmap.getHeight();
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            return "";
+        }
+        int targetWidth = 200;
+        int targetHeight = (int) Math.max(1L, Math.min(4000L,
+                ((long) sourceHeight * targetWidth) / Math.max(1, sourceWidth)));
+        Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, false);
+        int[] row = new int[targetWidth];
+        String asciiChars = "@#S%?*+;:,. ";
+        StringBuilder asciiArt = new StringBuilder((targetWidth + 1) * targetHeight);
+        try {
+            for (int y = 0; y < targetHeight; y++) {
+                resizedBitmap.getPixels(row, 0, targetWidth, 0, y, targetWidth, 1);
+                for (int x = 0; x < targetWidth; x++) {
+                    int pixel = row[x];
+                    int gray = (int) (0.2989 * ((pixel >> 16) & 0xFF)
+                            + 0.5870 * ((pixel >> 8) & 0xFF)
+                            + 0.1140 * (pixel & 0xFF));
+                    asciiArt.append(asciiChars.charAt(gray * (asciiChars.length() - 1) / 255));
+                }
+                asciiArt.append('\n');
+            }
+            return asciiArt.toString();
+        } finally {
+            if (resizedBitmap != bitmap && !resizedBitmap.isRecycled()) {
+                resizedBitmap.recycle();
+            }
+        }
     }
 
     private void saveAsciiArt(String asciiArt, Bitmap bitmap) {
@@ -143,16 +211,25 @@ public class asciiart extends Activity {
     }
 
     private void saveColorData(File file, Bitmap bitmap) {
-        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8), 65536)) {
             int width = bitmap.getWidth();
             int height = bitmap.getHeight();
-            int[] pixels = new int[width * height];
-            bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
-
+            int chunkWidth = Math.min(512, width);
+            int[] pixels = new int[chunkWidth];
+            StringBuilder line = new StringBuilder(chunkWidth * 24);
             for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    int pixel = pixels[y * width + x];
-                    writer.write(String.format("%d,%d:%d,%d,%d%n", x, y, (pixel >> 16) & 0xFF, (pixel >> 8) & 0xFF, pixel & 0xFF));
+                for (int startX = 0; startX < width; startX += chunkWidth) {
+                    int count = Math.min(chunkWidth, width - startX);
+                    bitmap.getPixels(pixels, 0, count, startX, y, count, 1);
+                    for (int i = 0; i < count; i++) {
+                        int pixel = pixels[i];
+                        line.append(startX + i).append(',').append(y).append(':')
+                                .append((pixel >> 16) & 0xFF).append(',')
+                                .append((pixel >> 8) & 0xFF).append(',')
+                                .append(pixel & 0xFF).append('\n');
+                    }
+                    writer.write(line.toString());
+                    line.setLength(0);
                 }
             }
             writer.flush();

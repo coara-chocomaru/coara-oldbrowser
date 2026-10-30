@@ -3380,7 +3380,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         }
         String resolvedMimeType = DownloadSupport.normalizeMimeType(mimeType, null);
         String fileName = DownloadSupport.buildTimestampFileName("blob_download_", resolvedMimeType);
-        String token = "blob_" + System.nanoTime() + "_" + Math.abs(new java.util.Random().nextInt());
+        String token = "blob_" + java.util.UUID.randomUUID().toString().replace("-", "");
         String js = "javascript:(function(){" +
                 "var token=" + JSONObject.quote(token) + ";" +
                 "var fileName=" + JSONObject.quote(fileName) + ";" +
