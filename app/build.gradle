@@ -10,8 +10,8 @@ android {
         applicationId = 'com.coara.oldbrowser'
         minSdk = 24
         targetSdk = 31
-        versionCode = 346
-        versionName = "4.4.4-7"
+        versionCode = 347
+        versionName = "1.0.0-1"
 
         proguardFiles(
             getDefaultProguardFile('proguard-android-optimize.txt'),
