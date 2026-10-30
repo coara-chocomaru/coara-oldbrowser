@@ -97,6 +97,8 @@ public final class PluginManager {
     private final Set<String> lastInjectedIds = new LinkedHashSet<>();
     private final byte[] tokenBytes;
     private final String token;
+    private final SecureRandom bridgeRandom = new SecureRandom();
+    private final Map<String, byte[]> bridgeTokens = new HashMap<>();
     private final Map<String, XhrState> xhrs = new ConcurrentHashMap<>();
     private final Map<String, WebExtParser.Messages> i18nCache = new HashMap<>();
     private final ExecutorService xhrPool = Executors.newFixedThreadPool(3);
@@ -193,8 +195,23 @@ public final class PluginManager {
         return new PluginBridge(this, ops);
     }
 
-    public String getToken() {
-        return token;
+    public synchronized String getToken(String pluginId) {
+        ensureLoadedLocked();
+        if (!isSafePluginId(pluginId)) {
+            return "";
+        }
+        PluginInfo plugin = find(pluginId);
+        if (plugin == null || !plugin.enabled) {
+            return "";
+        }
+        byte[] value = bridgeTokens.get(pluginId);
+        if (value == null) {
+            byte[] raw = new byte[16];
+            bridgeRandom.nextBytes(raw);
+            value = toHex(raw).getBytes(StandardCharsets.US_ASCII);
+            bridgeTokens.put(pluginId, value);
+        }
+        return new String(value, StandardCharsets.US_ASCII);
     }
 
     public String keyFor(String id) {
@@ -354,6 +371,7 @@ public final class PluginManager {
         } else {
             plugins.add(info);
         }
+        bridgeTokens.remove(info.id);
         recentErrors.remove(info.id);
         sourceCache.clear();
         sourceCacheChars = 0;
@@ -383,6 +401,7 @@ public final class PluginManager {
             return true;
         }
         p.enabled = enabled;
+        bridgeTokens.remove(id);
         if (enabled) {
             p.disabledReason = "";
             p.disabledAt = 0L;
@@ -415,6 +434,7 @@ public final class PluginManager {
         recentErrors.remove(id);
         i18nCache.remove(id);
         logRate.remove(id);
+        bridgeTokens.remove(id);
         sourceCache.clear();
         sourceCacheChars = 0;
         logger.removeFor(id);
@@ -1084,11 +1104,13 @@ public final class PluginManager {
         }
     }
 
-    boolean checkToken(String candidate) {
-        if (candidate == null) {
+    synchronized boolean checkToken(String pluginId, String candidate) {
+        if (!isSafePluginId(pluginId) || candidate == null || candidate.length() != 32) {
             return false;
         }
-        return MessageDigest.isEqual(candidate.getBytes(StandardCharsets.UTF_8), tokenBytes);
+        byte[] expected = bridgeTokens.get(pluginId);
+        return expected != null && MessageDigest.isEqual(
+                candidate.getBytes(StandardCharsets.US_ASCII), expected);
     }
 
     private void handleReport(String id, String kind, String message, String json) {

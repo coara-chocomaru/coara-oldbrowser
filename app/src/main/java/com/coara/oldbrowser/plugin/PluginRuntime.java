@@ -510,6 +510,7 @@ public final class PluginRuntime {
         for (ScheduledScript item : scheduled) {
             JSONObject o = new JSONObject();
             o.put("id", item.info.id);
+            o.put("token", manager.getToken(item.info.id));
             o.put("key", manager.keyFor(item.info.id + "#" + item.index));
             o.put("allFrames", item.entry.allFrames);
             o.put("matches", new JSONArray(PluginPatterns.toRegexList(PluginPatterns.effectiveMatches(item.entry.matches))));
@@ -518,7 +519,6 @@ public final class PluginRuntime {
         }
         List<String[]> values = new ArrayList<>();
         values.add(new String[]{"%BRIDGE%", PluginManager.BRIDGE_NAME});
-        values.add(new String[]{"%TOKEN%", manager.getToken()});
         values.add(new String[]{"%EXPECTED%", expected.toString()});
         String script = fill(template, values);
         return script.length() <= MAX_WATCHDOG_SCRIPT_CHARS ? script : null;
@@ -611,7 +611,7 @@ public final class PluginRuntime {
             String tail = template.substring(idx + "%BODY%".length());
             List<String[]> headValues = new ArrayList<>();
             headValues.add(new String[]{"%BRIDGE%", PluginManager.BRIDGE_NAME});
-            headValues.add(new String[]{"%TOKEN%", manager.getToken()});
+            headValues.add(new String[]{"%TOKEN%", manager.getToken(info.id)});
             headValues.add(new String[]{"%META%", meta.toString()});
             headValues.add(new String[]{"%CSS%", css.toString()});
             headValues.add(new String[]{"%KEY%", manager.keyFor(info.id + "#" + index)});

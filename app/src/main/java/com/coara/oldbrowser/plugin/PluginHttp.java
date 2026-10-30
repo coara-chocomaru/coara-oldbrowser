@@ -122,8 +122,24 @@ final class PluginHttp {
         while (h.endsWith(".")) {
             h = h.substring(0, h.length() - 1);
         }
-        if (h.isEmpty() || h.startsWith("[") || h.indexOf(':') >= 0) {
+        if (h.isEmpty()) {
             return true;
+        }
+        if (h.startsWith("[") || h.indexOf(':') >= 0) {
+            String ipv6 = h.startsWith("[") && h.endsWith("]")
+                    ? h.substring(1, h.length() - 1) : h;
+            try {
+                java.net.InetAddress address = java.net.InetAddress.getByName(ipv6);
+                if (!(address instanceof java.net.Inet6Address)) {
+                    return true;
+                }
+                byte[] raw = address.getAddress();
+                return address.isAnyLocalAddress() || address.isLoopbackAddress()
+                        || address.isLinkLocalAddress() || address.isSiteLocalAddress()
+                        || address.isMulticastAddress() || (raw.length == 16 && (raw[0] & 0xFE) == 0xFC);
+            } catch (Exception e) {
+                return true;
+            }
         }
         if (h.equals("localhost") || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")
                 || h.endsWith(".lan") || h.endsWith(".home.arpa") || h.indexOf('.') < 0 && parseLooseIpv4(h) < 0) {
@@ -205,7 +221,7 @@ final class PluginHttp {
                     }
                     continue;
                 }
-                if (host.equals(e)) {
+                if (host.equals(e) && !priv && !resolvesToPrivate(host)) {
                     return true;
                 }
                 if (!priv && host.endsWith("." + e) && (secure || !isIpLiteral(host)) && !resolvesToPrivate(host)) {
