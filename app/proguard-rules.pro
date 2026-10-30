@@ -1,3 +1,7 @@
+-allowaccessmodification
+-repackageclasses ''
+-optimizationpasses 5
+
 -keepattributes RuntimeVisibleAnnotations,SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
