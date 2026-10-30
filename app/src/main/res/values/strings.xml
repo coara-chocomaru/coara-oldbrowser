@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">coara-browser</string>
+    <string name="app_name">coara-oldbrowser</string>
     <string name="qrcode_short_label">QRコード</string>
     <string name="qrcode_long_label">QRコードに変換</string>
     <string name="pagedl_short_label">ページDL</string>
