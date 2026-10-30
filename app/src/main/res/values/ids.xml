@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="plugin_view_state" type="id" />
+    <item name="native_bridge_token" type="id" />
+    <item name="recycler_holder" type="id" />
+</resources>

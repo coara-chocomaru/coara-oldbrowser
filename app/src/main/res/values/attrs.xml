@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <attr name="cardBackgroundColor" format="color|reference"/>
+    <attr name="cardCornerRadius" format="dimension"/>
+    <attr name="cardElevation" format="dimension"/>
+    <attr name="strokeColor" format="color|reference"/>
+    <attr name="strokeWidth" format="dimension"/>
+    <attr name="cornerRadius" format="dimension"/>
+    <attr name="backgroundTint" format="color|reference"/>
+    <attr name="chipSpacingHorizontal" format="dimension"/>
+    <attr name="chipSpacingVertical" format="dimension"/>
+    <attr name="singleLine" format="boolean"/>
+    <attr name="singleSelection" format="boolean"/>
+    <attr name="selectionRequired" format="boolean"/>
+    <attr name="boxBackgroundColor" format="color|reference"/>
+    <attr name="boxCornerRadiusTopStart" format="dimension"/>
+    <attr name="boxCornerRadiusTopEnd" format="dimension"/>
+    <attr name="boxCornerRadiusBottomStart" format="dimension"/>
+    <attr name="boxCornerRadiusBottomEnd" format="dimension"/>
+    <attr name="startIconDrawable" format="reference"/>
+    <attr name="startIconTint" format="color|reference"/>
+    <attr name="endIconMode" format="enum">
+        <enum name="none" value="0"/>
+        <enum name="clear_text" value="1"/>
+    </attr>
+    <attr name="hintEnabled" format="boolean"/>
+    <attr name="fabSize" format="enum">
+        <enum name="normal" value="0"/>
+        <enum name="mini" value="1"/>
+    </attr>
+    <attr name="roundButtonStyle" format="reference"/>
+    <attr name="chipStyle" format="reference"/>
+    <declare-styleable name="CardView">
+        <attr name="cardBackgroundColor"/>
+        <attr name="cardCornerRadius"/>
+        <attr name="cardElevation"/>
+        <attr name="strokeColor"/>
+        <attr name="strokeWidth"/>
+    </declare-styleable>
+    <declare-styleable name="RoundButton">
+        <attr name="cornerRadius"/>
+        <attr name="backgroundTint"/>
+        <attr name="strokeColor"/>
+        <attr name="strokeWidth"/>
+    </declare-styleable>
+    <declare-styleable name="ChipGroup">
+        <attr name="chipSpacingHorizontal"/>
+        <attr name="chipSpacingVertical"/>
+        <attr name="singleLine"/>
+        <attr name="singleSelection"/>
+        <attr name="selectionRequired"/>
+    </declare-styleable>
+    <declare-styleable name="TextInputLayout">
+        <attr name="boxBackgroundColor"/>
+        <attr name="boxCornerRadiusTopStart"/>
+        <attr name="boxCornerRadiusTopEnd"/>
+        <attr name="boxCornerRadiusBottomStart"/>
+        <attr name="boxCornerRadiusBottomEnd"/>
+        <attr name="startIconDrawable"/>
+        <attr name="startIconTint"/>
+        <attr name="endIconMode"/>
+        <attr name="hintEnabled"/>
+    </declare-styleable>
+    <declare-styleable name="FloatingActionButton">
+        <attr name="fabSize"/>
+        <attr name="backgroundTint"/>
+    </declare-styleable>
+</resources>
