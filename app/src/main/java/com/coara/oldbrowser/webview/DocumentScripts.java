@@ -104,6 +104,15 @@ public final class DocumentScripts {
         final CopyOnWriteArrayList<Entry> entries = new CopyOnWriteArrayList<>();
         volatile String topUrl = "";
         volatile String userAgent;
+
+        boolean hasStrict() {
+            for (Entry entry : entries) {
+                if (!entry.fallback) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     private static final Map<WebView, State> STATES = Collections.synchronizedMap(new WeakHashMap<WebView, State>());
@@ -247,7 +256,7 @@ public final class DocumentScripts {
             return null;
         }
         State state = stateOf(view, false);
-        if (state == null || state.entries.isEmpty()) {
+        if (state == null || !state.hasStrict()) {
             return null;
         }
         Uri uri = request.getUrl();
@@ -274,7 +283,7 @@ public final class DocumentScripts {
         }
         List<Entry> applicable = new ArrayList<>(state.entries.size());
         for (Entry entry : state.entries) {
-            if (entry.subFramesOnly && main) {
+            if (entry.fallback || (entry.subFramesOnly && main)) {
                 continue;
             }
             if (entry.matches(uri)) {
@@ -357,7 +366,6 @@ public final class DocumentScripts {
             if (!hasLang) {
                 conn.setRequestProperty("Accept-Language", Locale.getDefault().toLanguageTag() + ",en;q=0.8");
             }
-            conn.setRequestProperty("Accept-Encoding", "gzip");
             boolean cookies = cookiesAllowed(view, state, uri, main);
             if (!hasCookie && cookies) {
                 String cookie = CookieManager.getInstance().getCookie(url);
@@ -946,17 +954,5 @@ public final class DocumentScripts {
                 }
             }
         });
-    }
-
-    public static void runFallbackLater(final WebView view, long delayMs) {
-        MAIN.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    runFallback(view);
-                } catch (Throwable ignored) {
-                }
-            }
-        }, delayMs);
     }
 }
