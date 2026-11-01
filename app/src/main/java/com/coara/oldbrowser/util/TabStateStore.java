@@ -33,14 +33,14 @@ public final class TabStateStore {
                 bos.flush();
             }
             if (target.exists() && !target.delete()) {
-                
+
             }
             if (!temp.renameTo(target)) {
                 try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(target))) {
                     bos.write(bytes);
                     bos.flush();
                 }
-                
+
                 temp.delete();
             }
         } catch (Exception ignored) {
@@ -81,7 +81,7 @@ public final class TabStateStore {
         File sentinel = new File(dir, name);
         if (!sentinel.exists()) {
             try {
-                
+
                 sentinel.createNewFile();
             } catch (Exception ignored) {
             }

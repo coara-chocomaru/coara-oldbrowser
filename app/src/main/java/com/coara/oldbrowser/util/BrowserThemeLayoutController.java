@@ -199,7 +199,6 @@ public final class BrowserThemeLayoutController {
         }
     }
 
-
     private static LinearLayout findInner(Toolbar toolbar) {
         if (toolbar == null) return null;
         for (int i = 0; i < toolbar.getChildCount(); i++) {

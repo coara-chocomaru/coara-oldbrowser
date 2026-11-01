@@ -63,7 +63,6 @@ public final class SafeBrowsingSupport {
         SAFE_PROMPTS.remove(view);
     }
 
-
     public static void recordNavigation(WebView view, String url) {
         if (view == null || url == null || url.isEmpty()) {
             return;

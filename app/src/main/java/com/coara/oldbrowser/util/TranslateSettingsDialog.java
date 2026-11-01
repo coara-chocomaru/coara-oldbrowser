@@ -9,7 +9,6 @@ import android.widget.TextView;
 
 import android.widget.Switch;
 
-
 public final class TranslateSettingsDialog {
 
     private TranslateSettingsDialog() {

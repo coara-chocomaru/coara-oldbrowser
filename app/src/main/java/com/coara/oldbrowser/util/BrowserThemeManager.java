@@ -488,7 +488,6 @@ public final class BrowserThemeManager {
         return theme == null ? fallback : theme.palette.textPrimary;
     }
 
-
     public static ThemePalette getDefaultPalette() {
         return ThemePalette.defaultPalette();
     }
@@ -1303,8 +1302,6 @@ public final class BrowserThemeManager {
         if (idName.contains("item_container") || idName.contains("searchoverlay")) return p.surface;
         return p.background;
     }
-
-
 
     private static void saveOriginal(View view) {
         synchronized (ORIGINAL_VIEWS) {

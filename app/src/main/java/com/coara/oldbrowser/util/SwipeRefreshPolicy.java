@@ -6,7 +6,6 @@ import android.webkit.WebView;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-
 public final class SwipeRefreshPolicy {
     private SwipeRefreshPolicy() {}
 
@@ -34,7 +33,6 @@ public final class SwipeRefreshPolicy {
             Pattern.CASE_INSENSITIVE
     );
 
-
     private static final Pattern BLOCKED_PATHS = Pattern.compile(
             "(/watch($|[/?#])"
             + "|/shorts($|[/?#])"
@@ -56,7 +54,6 @@ public final class SwipeRefreshPolicy {
             + ")",
             Pattern.CASE_INSENSITIVE
     );
-
 
     private static final Pattern GOOGLE_HOST = Pattern.compile(
             "(^|\\.)(google\\.[a-z.]+|googleusercontent\\.com)$",
@@ -92,14 +89,10 @@ public final class SwipeRefreshPolicy {
             Pattern.CASE_INSENSITIVE
     );
 
-    
-    
-    
     private static final Pattern SAI_HOST = Pattern.compile(
             "(^|\\.)(sai)\\.[a-z0-9.-]+$|^sai$",
             Pattern.CASE_INSENSITIVE
     );
-
 
     public static boolean shouldEnablePullToRefresh(WebView webView, String url) {
         if (webView == null) return false;
@@ -154,28 +147,19 @@ public final class SwipeRefreshPolicy {
         return true;
     }
 
-
     public static boolean shouldBlockPullToRefresh(WebView webView) {
         if (webView == null) return true;
         String url = webView.getUrl();
         if (!shouldEnablePullToRefresh(webView, url)) return true;
-    
+
         return webView.canScrollVertically(-1);
     }
 
-     
- 
- 
- 
- 
- 
- 
     public static boolean shouldBlockPullToRefresh(WebView webView, boolean cachedEligible) {
         if (webView == null) return true;
         if (!cachedEligible) return true;
         return webView.canScrollVertically(-1);
     }
-
 
     private static boolean isSearchOrMapPage(String host, String path, String query) {
         if (host == null) return false;
@@ -202,7 +186,7 @@ public final class SwipeRefreshPolicy {
             if (path != null) {
                 String lp = path.toLowerCase(Locale.ROOT);
                 if (lp.startsWith("/images/search") || lp.startsWith("/search")) return true;
-  
+
                 if (lp.startsWith("/maps")) return true;
             }
         }

@@ -93,7 +93,6 @@ public final class ExternalDownloadTabTracker {
         updatePage(webView, url, true);
     }
 
-
     public static boolean shouldCloseWhenDownloadStarts(WebView webView, String downloadUrl,
                                                         String contentDisposition, String mimeType) {
         if (webView == null) {

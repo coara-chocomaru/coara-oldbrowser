@@ -11,7 +11,6 @@ import android.webkit.CookieManager;
 import android.webkit.WebView;
 import android.widget.Toast;
 
-
 import com.coara.oldbrowser.BrowserApplication;
 import com.coara.oldbrowser.DownloadHistoryActivity;
 import com.coara.oldbrowser.DownloadOpenActivity;
@@ -19,6 +18,7 @@ import com.coara.oldbrowser.DownloadHistoryManager;
 import com.coara.oldbrowser.model.DownloadItem;
 
 import java.io.BufferedInputStream;
+import java.lang.ref.WeakReference;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -35,8 +35,8 @@ import java.util.concurrent.Executors;
 
 public final class DownloadFallbackManager {
     public static final class Spec {
-        final Activity activity;
-        final WebView webView;
+        private final WeakReference<Activity> activityRef;
+        private final WeakReference<WebView> webViewRef;
         final String url;
         final String userAgent;
         final String contentDisposition;
@@ -51,8 +51,8 @@ public final class DownloadFallbackManager {
                     String contentDisposition, String mimeType, long contentLength,
                     String referer, String initialFileName, String effectiveMimeType,
                     boolean basicAuthEnabled) {
-            this.activity = activity;
-            this.webView = webView;
+            this.activityRef = new WeakReference<>(activity);
+            this.webViewRef = new WeakReference<>(webView);
             this.url = url;
             this.userAgent = userAgent;
             this.contentDisposition = contentDisposition;
@@ -63,14 +63,30 @@ public final class DownloadFallbackManager {
             this.effectiveMimeType = effectiveMimeType;
             this.basicAuthEnabled = basicAuthEnabled;
         }
+
+        Activity activity() {
+            return activityRef.get();
+        }
+
+        WebView webView() {
+            return webViewRef.get();
+        }
     }
 
     private static final ConcurrentHashMap<Long, Spec> SPECS = new ConcurrentHashMap<>();
-    private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "CoaraDownloadFallback");
-        t.setDaemon(true);
-        return t;
-    });
+    private static final ExecutorService EXECUTOR = createExecutor();
+
+    private static ExecutorService createExecutor() {
+        java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(
+            2, 2, 30L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<Runnable>(), r -> {
+                Thread t = new Thread(r, "CoaraDownloadFallback");
+                t.setDaemon(true);
+                return t;
+            });
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
+    }
     private static final int MAX_REDIRECTS = 12;
     private static final int CONNECT_TIMEOUT_MS = 20000;
     private static final int READ_TIMEOUT_MS = 30000;
@@ -122,8 +138,10 @@ public final class DownloadFallbackManager {
 
     public static void startDownloadService(Context context, long downloadId) {
         if (context == null || downloadId <= 0) return;
+        Context appContext = context.getApplicationContext();
+        if (appContext == null) appContext = context;
+        final Context fallbackContext = appContext;
         try {
-            Context appContext = context.getApplicationContext();
             Intent intent = new Intent(appContext, DownloadFallbackService.class);
             intent.putExtra(DownloadFallbackService.EXTRA_DOWNLOAD_ID, downloadId);
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -132,13 +150,14 @@ public final class DownloadFallbackManager {
                 appContext.startService(intent);
             }
         } catch (Exception e) {
-            EXECUTOR.execute(() -> runPersistedDownload(context, downloadId));
+            EXECUTOR.execute(() -> runPersistedDownload(fallbackContext, downloadId));
         }
     }
 
     public static boolean runPersistedDownload(Context context, long downloadId) {
         if (context == null || downloadId <= 0) return false;
         Context appContext = context.getApplicationContext();
+        if (appContext == null) appContext = context;
         DownloadControl control = CONTROLS.get(downloadId);
         if (control == null) {
             control = newControl();
@@ -330,7 +349,7 @@ public final class DownloadFallbackManager {
     private static void runFallback(Spec spec, long downloadId) {
         DownloadControl control = CONTROLS.get(downloadId);
         long generation = control == null ? -1L : control.generation;
-        runFallback(spec, downloadId, spec.activity, generation);
+        runFallback(spec, downloadId, spec.activity(), generation);
     }
 
     private static void runFallback(Spec spec, long downloadId, Context context) {
@@ -340,11 +359,19 @@ public final class DownloadFallbackManager {
     }
 
     private static void runFallback(Spec spec, long downloadId, Context context, long generation) {
-        final Context appContext = context != null ? context.getApplicationContext() : (spec.activity != null ? spec.activity.getApplicationContext() : null);
+        final Activity activity = spec.activity();
+        final WebView webView = spec.webView();
+        Context resolvedContext = context != null ? context.getApplicationContext() : null;
+        if (resolvedContext == null) resolvedContext = context;
+        if (resolvedContext == null && activity != null) {
+            resolvedContext = activity.getApplicationContext();
+            if (resolvedContext == null) resolvedContext = activity;
+        }
+        final Context appContext = resolvedContext;
         if (appContext == null || !isCurrentGeneration(downloadId, generation)) {
             return;
         }
-        if (spec.activity != null && isActivityUnavailable(spec.activity)) {
+        if (activity != null && isActivityUnavailable(activity)) {
             DownloadHistoryManager.updateManualDownload(appContext, downloadId, spec.initialFileName, "",
                     DownloadManager.STATUS_FAILED, 0L, spec.contentLength);
             postFailedNotification(appContext, downloadId, spec.initialFileName, "ダウンロードを開始できませんでした");
@@ -358,18 +385,18 @@ public final class DownloadFallbackManager {
                 DownloadManager.STATUS_RUNNING, 0L, spec.contentLength);
         postProgressNotification(appContext, downloadId, spec.initialFileName, 0L, spec.contentLength);
         FallbackResult first = perform(spec, spec.url, null, null, null, null, 0, downloadId, appContext, generation);
-        if (first.needsCredentials && spec.basicAuthEnabled && spec.activity != null) {
+        if (first.needsCredentials && spec.basicAuthEnabled && activity != null && !isActivityUnavailable(activity)) {
             final String realm = first.realm == null ? "" : first.realm;
             final String authHost = hostOf(first.authUrl == null ? spec.url : first.authUrl);
-            BasicAuthManager.markAuthenticationFailure(spec.activity, spec.webView, authHost, realm);
+            BasicAuthManager.markAuthenticationFailure(activity, webView, authHost, realm);
             UiThread.post(() -> BasicAuthManager.requestCredentials(
-                    spec.activity, spec.webView, authHost, realm,
+                    activity, webView, authHost, realm,
                     (username, password) -> {
                         if (username == null || password == null) {
                             DownloadHistoryManager.updateManualDownload(appContext, downloadId, spec.initialFileName, "",
                                     DownloadManager.STATUS_FAILED, 0L, spec.contentLength);
                             postFailedNotification(appContext, downloadId, spec.initialFileName, "Basic認証をキャンセルしました");
-                            toast(spec.activity, "Basic認証をキャンセルしました");
+                            toast(activity, "Basic認証をキャンセルしました");
                             CONTROLS.remove(downloadId);
                             SPECS.remove(downloadId);
                             return;
@@ -392,7 +419,7 @@ public final class DownloadFallbackManager {
                                     postPausedNotification(appContext, downloadId, name);
                                 } else {
                                     postFailedNotification(appContext, downloadId, name, second.message == null ? "ダウンロードに失敗しました" : second.message);
-                                    toast(spec.activity, second.message == null ? "ダウンロードに失敗しました" : second.message);
+                                    toast(activity, second.message == null ? "ダウンロードに失敗しました" : second.message);
                                 }
                                 CONTROLS.remove(downloadId);
                                 SPECS.remove(downloadId);
@@ -419,7 +446,7 @@ public final class DownloadFallbackManager {
                 postFailedNotification(appContext, downloadId, name, "ダウンロードをキャンセルしました");
             } else {
                 postFailedNotification(appContext, downloadId, name, first.message == null ? "ダウンロードに失敗しました" : first.message);
-                toast(spec.activity, first.message == null ? "ダウンロードに失敗しました" : first.message);
+                toast(activity, first.message == null ? "ダウンロードに失敗しました" : first.message);
             }
             CONTROLS.remove(downloadId);
             SPECS.remove(downloadId);
@@ -489,7 +516,12 @@ public final class DownloadFallbackManager {
                     if (DownloadSupport.isBlank(location)) {
                         return FallbackResult.failure("リダイレクト先を取得できません");
                     }
-                    String next = URI.create(currentUrl).resolve(location).toString();
+                    String next;
+                    try {
+                        next = URI.create(currentUrl).resolve(location).toString();
+                    } catch (IllegalArgumentException resolveError) {
+                        next = new URL(new URL(currentUrl), location.trim()).toString();
+                    }
                     if (username != null && password != null && credentialHost != null
                             && isCrossHost(currentUrl, next) && !hostEquals(credentialHost, hostOf(next))) {
                         username = null;
@@ -650,7 +682,7 @@ public final class DownloadFallbackManager {
                     DownloadHistoryManager.updateManualDownload(context, downloadId, fileName, target.displayPath, target.localUri,
                             DownloadManager.STATUS_SUCCESSFUL, finalBytes, finalBytes);
                     postCompleteNotification(context, downloadId, fileName);
-                    toast(spec.activity, "ダウンロードを完了しました");
+                    toast(spec.activity(), "ダウンロードを完了しました");
                     CONTROLS.remove(downloadId);
                     SPECS.remove(downloadId);
                     return FallbackResult.success();

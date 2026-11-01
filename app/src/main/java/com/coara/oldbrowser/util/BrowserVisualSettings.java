@@ -182,7 +182,6 @@ public final class BrowserVisualSettings {
         }
     }
 
-
     public static int getBackgroundTransparencyPercent(SharedPreferences preferences) {
         int value;
         try {

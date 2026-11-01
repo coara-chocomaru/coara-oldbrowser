@@ -12,8 +12,6 @@ import android.os.Build;
 import android.provider.MediaStore;
 import android.webkit.MimeTypeMap;
 
-
-
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;

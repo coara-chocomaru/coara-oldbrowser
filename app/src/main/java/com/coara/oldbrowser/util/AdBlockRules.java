@@ -376,7 +376,8 @@ public final class AdBlockRules {
                             return true;
                         }
                     } else if (first == '=') {
-                        if (path.equals(r.substring(1))) {
+                        int rl = r.length() - 1;
+                        if (path.length() == rl && path.regionMatches(0, r, 1, rl)) {
                             return true;
                         }
                     } else if (path.startsWith(r)) {
@@ -392,10 +393,28 @@ public final class AdBlockRules {
         }
     }
 
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> REGISTRABLE_CACHE =
+        new java.util.concurrent.ConcurrentHashMap<>(128);
+
     public static String registrable(String host) {
         if (host == null) {
             return "";
         }
+        String cached = REGISTRABLE_CACHE.get(host);
+        if (cached != null) {
+            return cached;
+        }
+        String value = computeRegistrable(host);
+        if (host.length() <= 253) {
+            if (REGISTRABLE_CACHE.size() >= 1024) {
+                REGISTRABLE_CACHE.clear();
+            }
+            REGISTRABLE_CACHE.put(host, value);
+        }
+        return value;
+    }
+
+    private static String computeRegistrable(String host) {
         int last = host.lastIndexOf('.');
         if (last <= 0) {
             return host;

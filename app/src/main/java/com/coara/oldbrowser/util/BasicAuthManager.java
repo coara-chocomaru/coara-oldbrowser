@@ -14,7 +14,6 @@ import android.webkit.WebViewDatabase;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 
-
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;

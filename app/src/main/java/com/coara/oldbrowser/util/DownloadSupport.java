@@ -430,9 +430,8 @@ public final class DownloadSupport {
         return base + "_" + System.currentTimeMillis() + ext;
     }
 
-
     public static boolean saveDataUrl(Activity activity, String url, String fileNameHint, String mimeTypeHint) {
-        if (activity == null || !isDataUrl(url)) {
+        if (activity == null || !isDataUrl(url) || url.length() > 96 * 1024 * 1024) {
             return false;
         }
         try {
@@ -561,7 +560,6 @@ public final class DownloadSupport {
         }
         return id;
     }
-
 
     public static void scheduleExternalTabCloseWhenStarted(Activity activity, WebView webView, long downloadId, Runnable closeAction) {
         if (activity == null || webView == null || downloadId <= 0 || closeAction == null) {
@@ -726,7 +724,6 @@ public final class DownloadSupport {
         } catch (Exception ignored) {
         }
     }
-
 
     public static boolean deleteLocalUri(Context context, String localUri) {
         if (context == null || isBlank(localUri)) {

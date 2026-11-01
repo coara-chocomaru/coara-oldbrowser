@@ -6,7 +6,6 @@ import android.webkit.WebSettings;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
-
 public final class CacheModePolicy {
     private CacheModePolicy() {}
 
@@ -65,7 +64,6 @@ public final class CacheModePolicy {
             Pattern.CASE_INSENSITIVE
     );
 
-
     private static final LruCache<String, Integer> MODE_CACHE = new LruCache<>(96);
 
     public static int determineForUrl(String url) {
@@ -115,7 +113,6 @@ public final class CacheModePolicy {
                 return WebSettings.LOAD_NO_CACHE;
             }
 
-        
            if (normHost.contains("google.") && path.startsWith("/maps")) {
                 return WebSettings.LOAD_DEFAULT;
             }
@@ -131,7 +128,6 @@ public final class CacheModePolicy {
 
         return WebSettings.LOAD_DEFAULT;
     }
-
 
     public static int determinePostLoad(String url, boolean isSpa) {
         int base = determineForUrl(url);

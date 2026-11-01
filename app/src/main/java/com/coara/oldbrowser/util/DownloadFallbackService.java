@@ -4,7 +4,6 @@ import android.app.Service;
 import android.content.Intent;
 import android.os.IBinder;
 
-
 import com.coara.oldbrowser.DownloadHistoryManager;
 
 import java.util.List;
@@ -21,7 +20,11 @@ public class DownloadFallbackService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        executor = Executors.newCachedThreadPool();
+        executor = Executors.newFixedThreadPool(3, runnable -> {
+            Thread thread = new Thread(runnable, "CoaraDownloadService");
+            thread.setDaemon(false);
+            return thread;
+        });
     }
 
     @Override
@@ -50,13 +53,21 @@ public class DownloadFallbackService extends Service {
         String title = item == null ? "ダウンロード" : item.title;
         long downloaded = item == null ? 0L : item.downloadedSize;
         long total = item == null ? 0L : item.totalSize;
-        startForeground(DownloadFallbackManager.notificationId(downloadId),
-                DownloadFallbackManager.buildProgressNotification(this, downloadId, title, downloaded, total));
+        try {
+            startForeground(DownloadFallbackManager.notificationId(downloadId),
+                    DownloadFallbackManager.buildProgressNotification(this, downloadId, title, downloaded, total));
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private void launchDownload(long downloadId, int startId) {
         long generation = DownloadFallbackManager.ensureGeneration(this, downloadId);
-        if (generation < 0L) return;
+        if (generation < 0L) {
+            if (activeGenerations.isEmpty()) {
+                stopSelfResult(startId);
+            }
+            return;
+        }
         Long runningGeneration = activeGenerations.putIfAbsent(downloadId, generation);
         if (runningGeneration != null && runningGeneration.longValue() == generation) {
             return;

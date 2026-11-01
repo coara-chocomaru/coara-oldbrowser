@@ -4,7 +4,6 @@ import android.content.Context;
 import android.webkit.WebView;
 import android.widget.Toast;
 
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -145,9 +144,11 @@ public final class PageTranslator {
 
     public static void release() {
         LanguageDetector.release();
-        if (netExecutor != null) {
-            netExecutor.shutdownNow();
-            netExecutor = null;
+        synchronized (PageTranslator.class) {
+            if (netExecutor != null) {
+                netExecutor.shutdownNow();
+                netExecutor = null;
+            }
         }
         SESSIONS.clear();
     }
@@ -730,13 +731,17 @@ public final class PageTranslator {
         }
     }
 
-    private static ExecutorService executor() {
+    private static synchronized ExecutorService executor() {
         if (netExecutor == null) {
-            netExecutor = Executors.newFixedThreadPool(4, runnable -> {
-                Thread thread = new Thread(runnable, "coara-translate");
-                thread.setDaemon(true);
-                return thread;
-            });
+            java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(
+                4, 4, 20L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<Runnable>(), runnable -> {
+                    Thread thread = new Thread(runnable, "coara-translate");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+            pool.allowCoreThreadTimeOut(true);
+            netExecutor = pool;
         }
         return netExecutor;
     }
