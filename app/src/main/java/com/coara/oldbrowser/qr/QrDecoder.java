@@ -30,9 +30,12 @@ public final class QrDecoder {
         if (text != null) {
             return text;
         }
-        byte[] inverted = new byte[width * height];
-        for (int i = 0; i < inverted.length; i++) {
-            inverted[i] = (byte) (255 - (luma[i] & 0xFF));
+        byte[] inverted = QrNative.invert(luma, width, height);
+        if (inverted == null) {
+            inverted = new byte[width * height];
+            for (int i = 0; i < inverted.length; i++) {
+                inverted[i] = (byte) (255 - (luma[i] & 0xFF));
+            }
         }
         text = attempt(QrBinarizer.binarize(inverted, width, height));
         if (text != null) {
@@ -41,7 +44,15 @@ public final class QrDecoder {
         return attempt(QrBinarizer.binarize(smooth(inverted, width, height), width, height));
     }
 
-    private static byte[] smooth(byte[] luma, int width, int height) {
+    static byte[] smooth(byte[] luma, int width, int height) {
+        byte[] fast = QrNative.smooth(luma, width, height);
+        if (fast != null) {
+            return fast;
+        }
+        return smoothJava(luma, width, height);
+    }
+
+    static byte[] smoothJava(byte[] luma, int width, int height) {
         byte[] tmp = new byte[width * height];
         byte[] out = new byte[width * height];
         for (int y = 0; y < height; y++) {

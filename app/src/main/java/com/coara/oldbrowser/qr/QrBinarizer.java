@@ -9,8 +9,16 @@ final class QrBinarizer {
     }
 
     static BitGrid binarize(byte[] luma, int width, int height) {
+        BitGrid fast = QrNative.binarize(luma, width, height);
+        if (fast != null) {
+            return fast;
+        }
+        return binarizeJava(luma, width, height);
+    }
+
+    static BitGrid binarizeJava(byte[] luma, int width, int height) {
         if (width < MIN_DIMENSION || height < MIN_DIMENSION) {
-            return global(luma, width, height);
+            return globalJava(luma, width, height);
         }
         int subWidth = (width + BLOCK - 1) / BLOCK;
         int subHeight = (height + BLOCK - 1) / BLOCK;
@@ -86,6 +94,14 @@ final class QrBinarizer {
     }
 
     static BitGrid global(byte[] luma, int width, int height) {
+        BitGrid fast = QrNative.global(luma, width, height);
+        if (fast != null) {
+            return fast;
+        }
+        return globalJava(luma, width, height);
+    }
+
+    static BitGrid globalJava(byte[] luma, int width, int height) {
         int[] histogram = new int[256];
         int total = width * height;
         for (int i = 0; i < total; i++) {
