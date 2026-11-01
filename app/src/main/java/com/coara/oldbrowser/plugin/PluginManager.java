@@ -101,7 +101,7 @@ public final class PluginManager {
     private final Map<String, byte[]> bridgeTokens = new HashMap<>();
     private final Map<String, XhrState> xhrs = new ConcurrentHashMap<>();
     private final Map<String, WebExtParser.Messages> i18nCache = new HashMap<>();
-    private final ExecutorService xhrPool = Executors.newFixedThreadPool(3);
+    private final ExecutorService xhrPool = createXhrPool();
     private final Runnable clearMarkerRunnable = new Runnable() {
         @Override
         public void run() {
@@ -115,6 +115,18 @@ public final class PluginManager {
     private int runtimeVersion = 0;
     private long lastInjectionAt = 0L;
     private long lastMarkerWrite = 0L;
+
+    private static ExecutorService createXhrPool() {
+        java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(
+            3, 3, 20L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<Runnable>(), r -> {
+                Thread t = new Thread(r, "coara-plugin-xhr");
+                t.setDaemon(true);
+                return t;
+            });
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
+    }
 
     private PluginManager(Context context) {
         this.appContext = context.getApplicationContext();
@@ -343,11 +355,22 @@ public final class PluginManager {
                 }
             }
             File dest = new File(root, info.id);
+            File backup = null;
             if (dest.exists()) {
-                deleteRecursive(dest);
+                backup = new File(root, ".old_" + System.nanoTime());
+                if (!dest.renameTo(backup)) {
+                    deleteRecursive(dest);
+                    backup = null;
+                }
             }
             if (!tmp.renameTo(dest)) {
+                if (backup != null) {
+                    backup.renameTo(dest);
+                }
                 throw new PluginInstallException("プラグインを保存できません");
+            }
+            if (backup != null) {
+                deleteRecursive(backup);
             }
         } catch (IOException e) {
             deleteRecursive(tmp);
@@ -1082,7 +1105,7 @@ public final class PluginManager {
         long now = System.currentTimeMillis();
         if (dirs != null) {
             for (File d : dirs) {
-                if (d.getName().startsWith(".tmp_") && now - d.lastModified() > 60L * 60_000L) {
+                if ((d.getName().startsWith(".tmp_") || d.getName().startsWith(".old_")) && now - d.lastModified() > 60L * 60_000L) {
                     deleteRecursive(d);
                 }
             }

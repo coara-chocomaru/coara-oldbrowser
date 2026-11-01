@@ -431,7 +431,6 @@ final class PluginHttp {
         }
     }
 
-
     private static boolean validHeaders(JSONObject headers) {
         if (headers.length() > 64) {
             return false;

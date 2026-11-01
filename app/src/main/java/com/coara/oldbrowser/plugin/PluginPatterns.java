@@ -75,10 +75,26 @@ public final class PluginPatterns {
         }
     }
 
+    private static final Map<String, String> REGEX_CACHE = new ConcurrentHashMap<>();
+    private static final String REGEX_NONE = "\u0000";
+
     public static String toRegex(String pattern) {
         if (pattern == null) {
             return null;
         }
+        String cached = REGEX_CACHE.get(pattern);
+        if (cached != null) {
+            return REGEX_NONE.equals(cached) ? null : cached;
+        }
+        String computed = computeRegex(pattern);
+        if (REGEX_CACHE.size() >= 1024) {
+            REGEX_CACHE.clear();
+        }
+        REGEX_CACHE.put(pattern, computed == null ? REGEX_NONE : computed);
+        return computed;
+    }
+
+    private static String computeRegex(String pattern) {
         String p = pattern.trim();
         if (p.isEmpty() || p.length() > 2048) {
             return null;

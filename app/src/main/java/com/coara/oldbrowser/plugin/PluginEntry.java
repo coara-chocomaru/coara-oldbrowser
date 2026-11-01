@@ -30,7 +30,7 @@ public final class PluginEntry {
         return PluginPatterns.matchesAny(matchRegex(), url);
     }
 
-    private List<String> matchRegex() {
+    private synchronized List<String> matchRegex() {
         List<String> source = PluginPatterns.effectiveMatches(matches);
         if (cachedMatchSource == null || !cachedMatchSource.equals(source)) {
             cachedMatchSource = new ArrayList<>(source);
@@ -39,7 +39,7 @@ public final class PluginEntry {
         return cachedMatchRegex;
     }
 
-    private List<String> excludeRegex() {
+    private synchronized List<String> excludeRegex() {
         if (cachedExcludeSource == null || !cachedExcludeSource.equals(excludes)) {
             cachedExcludeSource = new ArrayList<>(excludes);
             cachedExcludeRegex = PluginPatterns.toRegexList(excludes);
