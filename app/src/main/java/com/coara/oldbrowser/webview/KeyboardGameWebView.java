@@ -20,7 +20,6 @@ import com.coara.oldbrowser.util.TouchpadController;
 
 import java.util.Map;
 
-
 import org.json.JSONObject;
 
 public class KeyboardGameWebView extends WebView {

@@ -8,7 +8,6 @@ import com.coara.oldbrowser.R;
 
 import org.json.JSONObject;
 
-
 public final class WebViewOptimizationUtils {
     private WebViewOptimizationUtils() {}
 

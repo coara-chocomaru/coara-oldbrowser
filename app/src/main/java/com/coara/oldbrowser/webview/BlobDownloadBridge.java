@@ -14,7 +14,6 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.widget.Toast;
 
-
 import com.coara.oldbrowser.BrowserApplication;
 import com.coara.oldbrowser.DownloadOpenActivity;
 import com.coara.oldbrowser.DownloadHistoryManager;
