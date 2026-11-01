@@ -30,3 +30,7 @@
     public static int d(...);
     public static int i(...);
 }
+
+-keepclasseswithmembernames class com.coara.oldbrowser.qr.QrNative {
+    private static native <methods>;
+}
