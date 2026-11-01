@@ -1,17 +1,20 @@
 plugins {
     id 'com.android.application'
 }
-
 android {
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
     namespace = 'com.coara.oldbrowser'
 
     defaultConfig {
         applicationId = 'com.coara.oldbrowser'
         minSdk = 24
         targetSdk = 31
-        versionCode = 347
-        versionName = "1.0.0-1"
+        versionCode = 348
+        versionName = "1.0.0-3"
 
         proguardFiles(
             getDefaultProguardFile('proguard-android-optimize.txt'),
