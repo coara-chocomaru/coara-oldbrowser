@@ -25,6 +25,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.text.InputType;
 import android.util.Base64;
@@ -265,9 +266,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
     private final Map<WebView, Bitmap> tabSnapshots = new LinkedHashMap<>();
     private static final int MAX_MEMORY_SNAPSHOTS = 8;
     private final Map<WebView, Runnable> pendingSpaHistoryTasks = new HashMap<>();
-    
-    
-    
+
     private final Map<WebView, Boolean> pullToRefreshEligibleCache = new HashMap<>();
     private final Map<WebView, PendingTab> pendingTabs = new HashMap<>();
     private final Set<WebView> loadedPages = Collections.newSetFromMap(new WeakHashMap<WebView, Boolean>());
@@ -517,7 +516,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             if (current == null || TouchpadController.isScreenTouchBlocked()) return true;
             Boolean cached = pullToRefreshEligibleCache.get(current);
             if (cached == null) {
-                
+
                 cached = SwipeRefreshPolicy.shouldEnablePullToRefresh(current, current.getUrl());
                 pullToRefreshEligibleCache.put(current, cached);
             }
@@ -532,7 +531,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
                 }
             }, 15000);
         });
-            
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             permissionLauncher = resultRegistry.forPermission(isGranted -> {
                     if (!isGranted) {
@@ -587,15 +586,16 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         }
     );
         fileChooserLauncher = resultRegistry.forIntent(result -> {
-                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                        Uri dataUri = result.getData().getData();
-                        if (filePathCallback != null) {
-                            filePathCallback.onReceiveValue(dataUri != null ? new Uri[]{dataUri} : null);
-                        }
-                    } else if (filePathCallback != null) {
-                        filePathCallback.onReceiveValue(null);
-                    }
+                    ValueCallback<Uri[]> callback = filePathCallback;
                     filePathCallback = null;
+                    if (callback != null) {
+                        Uri[] picked = null;
+                        try {
+                            picked = WebChromeClient.FileChooserParams.parseResult(result.getResultCode(), result.getData());
+                        } catch (Exception ignored) {
+                        }
+                        callback.onReceiveValue(picked);
+                    }
                 });
         backgroundImageLauncher = resultRegistry.forGetContent(uri -> {
                     if (uri != null) {
@@ -1063,6 +1063,14 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
 
     @Override
     protected void onDestroy() {
+        ValueCallback<Uri[]> pendingChooser = filePathCallback;
+        filePathCallback = null;
+        if (pendingChooser != null) {
+            try {
+                pendingChooser.onReceiveValue(null);
+            } catch (Exception ignored) {
+            }
+        }
         PageTranslator.release();
         if (findController != null) {
             findController.release();
@@ -1224,7 +1232,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             }
         }
     }
-
 
     private void pauseAllWebViewTimers() {
         synchronized (webViews) {
@@ -1455,7 +1462,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         }
     }
 
-
     private void loadTabsState() {
         synchronized (webViews) {
             String tabsJsonStr = pref.getString(KEY_TABS, "[]");
@@ -1561,7 +1567,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             updateTabCount();
         }
     }
-
 
     private void updateTabCount() {
         if (tabCountTextView != null) {
@@ -1819,7 +1824,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         com.coara.oldbrowser.webview.WebViewOptimizationUtils.enableSafeBrowsing(settings);
         applyCookiePolicy(webView);
         settings.setUserAgentString(defaultUA);
-        
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             if (sSetSaveFormDataMethod != null) {
                 try {
@@ -2021,10 +2026,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
 
             @Override
             public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
-                
-                
-                
-                
+
                 try {
                     boolean crashed = detail != null && detail.didCrash();
                     PluginRuntime.onRenderProcessGone(view, crashed);
@@ -2051,8 +2053,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
-                
-                
+
                 try {
                     if (request != null && request.isForMainFrame()) {
                         android.util.Log.w("CoaraBrowser", "Main frame load error: "
@@ -2366,6 +2367,13 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback,
                                                FileChooserParams fileChooserParams) {
+                ValueCallback<Uri[]> previousCallback = MainActivity.this.filePathCallback;
+                if (previousCallback != null && previousCallback != filePathCallback) {
+                    try {
+                        previousCallback.onReceiveValue(null);
+                    } catch (Exception ignored) {
+                    }
+                }
                 MainActivity.this.filePathCallback = filePathCallback;
                 try {
                     fileChooserLauncher.launch(fileChooserParams.createIntent());
@@ -2543,13 +2551,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         return webView;
     }
 
-
-     
- 
- 
- 
- 
- 
     private void recoverFromRenderProcessGone(WebView crashed, String recoverUrl) {
         synchronized (webViews) {
             int index = webViews.indexOf(crashed);
@@ -2624,13 +2625,12 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
                 urlEditText.setText(recoverUrl);
                 updatePullToRefreshState(replacement, recoverUrl);
             } else {
-                
+
                 replacement.loadUrl(recoverUrl);
                 replacement.onPause();
             }
         }
     }
-
 
     private void showTextColorDialog() {
         final String[] labels = BrowserVisualSettings.getTextColorLabels();
@@ -3160,6 +3160,26 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         }
     }
 
+    private void releaseOverflowTabState(WebView removed) {
+        getTabGroupStore().remove(getTabId(removed));
+        externalTabs.remove(removed);
+        ExternalDownloadTabTracker.clear(removed);
+        clearPendingSpaHistory(removed);
+        pullToRefreshEligibleCache.remove(removed);
+        pendingTabs.remove(removed);
+        originalUserAgents.remove(removed);
+    }
+
+    private static void detachFromParent(WebView webView) {
+        if (webView == null || Looper.myLooper() != Looper.getMainLooper()) {
+            return;
+        }
+        android.view.ViewParent parent = webView.getParent();
+        if (parent instanceof android.view.ViewGroup) {
+            ((android.view.ViewGroup) parent).removeView(webView);
+        }
+    }
+
     private void closeTab(WebView webView) {
         synchronized (webViews) {
             int index = webViews.indexOf(webView);
@@ -3186,6 +3206,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
                     try {
                         webView.stopLoading();
                         releaseBlobBridge(webView);
+                        detachFromParent(webView);
                         webView.destroy();
                     } catch (Exception ignored) {
                     }
@@ -3257,6 +3278,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             try {
                 webView.stopLoading();
                 releaseBlobBridge(webView);
+                detachFromParent(webView);
                 webView.destroy();
             } catch (Exception ignored) {
             }
@@ -3288,8 +3310,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             });
         }
     }
-
-
 
     private void installDownloadHintScript(WebView view) {
         if (view == null || !jsEnabled) {
@@ -3432,16 +3452,16 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         return buildTimestampFileName("blob_download_", mimeType);
     }
 
-
-    
-
-
     private void saveImage(String imageUrl) {
         try {
             if (imageUrl != null && imageUrl.startsWith("data:")) {
                 int commaIndex = imageUrl.indexOf(',');
                 if (commaIndex == -1) {
                     Toast.makeText(MainActivity.this, "無効なデータURL", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (imageUrl.length() > 48 * 1024 * 1024) {
+                    Toast.makeText(MainActivity.this, "画像が大きすぎます", Toast.LENGTH_SHORT).show();
                     return;
                 }
                 String metadata = imageUrl.substring(5, commaIndex);
@@ -3451,6 +3471,9 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
                     mimeType = metadata.split(";")[0].trim();
                 } else if (!metadata.isEmpty()) {
                     mimeType = metadata.trim();
+                }
+                if (mimeType.isEmpty() || mimeType.indexOf('*') >= 0) {
+                    mimeType = "image/png";
                 }
 
                 byte[] imageData;
@@ -3657,6 +3680,8 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             try {
                 removed.stopLoading();
                 releaseBlobBridge(removed);
+                releaseOverflowTabState(removed);
+                detachFromParent(removed);
                 removed.destroy();
             } catch (Exception ignored) {
             }
@@ -3707,6 +3732,8 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
             try {
                 removed.stopLoading();
                 releaseBlobBridge(removed);
+                releaseOverflowTabState(removed);
+                detachFromParent(removed);
                 removed.destroy();
             } catch (Exception ignored) {
             }
@@ -3725,7 +3752,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         switchToTab(webViews.size() - 1);
         getCurrentWebView().loadUrl(START_PAGE);
     }
-
 
     private void createNewTab(String url) {
         if (webViews.size() >= MAX_TABS) {
@@ -3746,7 +3772,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         SafeBrowsingSupport.recordNavigation(newWebView, url);
         newWebView.loadUrl(url);
     }
-
 
     private void switchToTab(int index) {
         if (index < 0 || index >= webViews.size() || index == currentTabIndex) return;
@@ -4036,7 +4061,7 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
                     try {
                         SpaStateManager.getInstance().setDetected(owner, isSpa);
                         if (owner == getCurrentWebView()) {
-                            
+
                             updatePullToRefreshState(owner, owner.getUrl());
                             String currentUrl = owner.getUrl();
                             if (currentUrl != null) {
@@ -4518,7 +4543,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         }
     }
 
-
     private void clearAllBrowsingData() {
         synchronized (historyItems) {
             historyItems.clear();
@@ -4626,6 +4650,8 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
                 if (w == current) {
                     continue;
                 }
+                getTabGroupStore().remove(getTabId(w));
+                clearPendingSpaHistory(w);
                 externalTabs.remove(w);
                 ExternalDownloadTabTracker.clear(w);
                 Object tag = w.getTag();
@@ -4684,7 +4710,6 @@ public class MainActivity extends Activity implements PluginHost, PluginManager.
         }
     }
 
-
     private void takeScreenshot() {
     View rootView = getWindow().getDecorView().getRootView();
     int width = rootView.getWidth();
@@ -4727,19 +4752,9 @@ private void saveScreenshot(Bitmap bitmap) {
     try {
         backgroundExecutor.execute(() -> {
             try {
-                File screenshotDir = new File(Environment.getExternalStorageDirectory(), "DCIM/Screenshot");
-                if (!screenshotDir.exists()) {
-                    screenshotDir.mkdirs();
-                }
-                String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-                String fileName = timeStamp + ".png";
-                File screenshotFile = new File(screenshotDir, fileName);
-                try (FileOutputStream fos = new FileOutputStream(screenshotFile)) {
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 80, fos);
-                    fos.flush();
-                }
+                final String savedPath = com.coara.oldbrowser.util.ScreenshotSaver.save(MainActivity.this, bitmap, 80);
                 runOnUiThread(() ->
-                    Toast.makeText(MainActivity.this, "スクリーンショットを保存しました: " + screenshotFile.getAbsolutePath(), Toast.LENGTH_LONG).show()
+                    Toast.makeText(MainActivity.this, "スクリーンショットを保存しました: " + savedPath, Toast.LENGTH_LONG).show()
                 );
             } catch (Exception e) {
                 runOnUiThread(() ->
@@ -4945,7 +4960,6 @@ private void recycleScreenshotBitmap(Bitmap bitmap) {
         });
     }
 
-    
     private void showTabsDialog() {
         WebView currentForSnapshot = getCurrentWebView();
         if (currentForSnapshot != null) {
@@ -5032,7 +5046,6 @@ private void recycleScreenshotBitmap(Bitmap bitmap) {
         );
     }
 
-
     private void captureTabSnapshot(WebView webView) {
         if (webView == null) return;
         int width = webView.getWidth();
@@ -5050,13 +5063,6 @@ private void recycleScreenshotBitmap(Bitmap bitmap) {
             }
         }
 
-        
-        
-        
-        
-        
-        
-        
         int maxPreviewWidth = 360;
         float scale = width > maxPreviewWidth ? (float) maxPreviewWidth / (float) width : 1f;
         int targetWidth = Math.max(1, Math.round(width * scale));
@@ -5071,8 +5077,7 @@ private void recycleScreenshotBitmap(Bitmap bitmap) {
             }
             webView.draw(canvas);
         } catch (OutOfMemoryError oom) {
-            
-            
+
             snapshot = null;
         }
 
@@ -5099,7 +5104,6 @@ private void recycleScreenshotBitmap(Bitmap bitmap) {
             it.remove();
         }
     }
-
 
     private final BookmarkDialog.Host bookmarkHost = new BookmarkDialog.Host() {
         @Override
@@ -5563,7 +5567,20 @@ private void addHistory(String url, String title) {
         File faviconsDir = new File(getFilesDir(), "favicons");
         File file = new File(faviconsDir, getFaviconFilename(url));
         if (file.exists()) {
-            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath());
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                return;
+            }
+            int sample = 1;
+            int longest = Math.max(bounds.outWidth, bounds.outHeight);
+            while (longest / sample > 256) {
+                sample <<= 1;
+            }
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
             if (bitmap != null) {
                 faviconCache.put(url, bitmap);
             }
@@ -5643,7 +5660,6 @@ private void addHistory(String url, String title) {
             }
         } catch (Exception ignored) {}
     }
-
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
@@ -5744,7 +5760,6 @@ private void addHistory(String url, String title) {
         return fileName;
     }
 
-
     private String getAccurateFileName(String url, String contentDisposition, String mimeType) {
         String fileName = null;
         if (!isBlank(contentDisposition)) {
@@ -5760,8 +5775,6 @@ private void addHistory(String url, String title) {
         fileName = ensureExtensionForFileName(fileName, mimeType, url);
         return sanitizeFileName(fileName);
     }
-
-
 
     private static final Pattern CD_FILENAME_STAR = Pattern.compile("filename\\*\\s*=\\s*([^']+)'[^']*'([^;]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern CD_FILENAME = Pattern.compile("filename\\s*=\\s*\"?([^\";]+)\"?", Pattern.CASE_INSENSITIVE);
@@ -5789,8 +5802,6 @@ private void addHistory(String url, String title) {
         }
         return null;
     }
-
-
 
     private String sanitizeFileName(String name) {
         if (isBlank(name)) {
@@ -5827,14 +5838,15 @@ private void addHistory(String url, String title) {
             }
             String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
             String zipName = "cookies_all_" + timestamp + ".zip";
-            File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (!downloadDir.exists()) {
-                downloadDir.mkdirs();
+            final com.coara.oldbrowser.util.PublicStorageWriter.Target target;
+            try {
+                target = com.coara.oldbrowser.util.PublicStorageWriter.openDownloadsTarget(context, zipName, "application/zip");
+            } catch (IOException e) {
+                Toast.makeText(context, "ZIP保存に失敗しました", Toast.LENGTH_LONG).show();
+                return;
             }
-            File zipFile = new File(downloadDir, zipName);
             boolean hasCookie = false;
-            try (FileOutputStream fos = new FileOutputStream(zipFile);
-                 ZipOutputStream zos = new ZipOutputStream(fos)) {
+            try (ZipOutputStream zos = new ZipOutputStream(target.outputStream)) {
                 for (int i = 0; i < webViews.size(); i++) {
                     String url = urls.get(i);
                     if (url == null || url.isEmpty() || url.startsWith("about:") || url.startsWith("data:")) {
@@ -5861,16 +5873,20 @@ private void addHistory(String url, String title) {
                     hasCookie = true;
                 }
             } catch (Exception e) {
+                com.coara.oldbrowser.util.PublicStorageWriter.abort(context, target);
                 Toast.makeText(context, "ZIP保存に失敗しました", Toast.LENGTH_LONG).show();
-                e.printStackTrace();
                 return;
             }
             if (!hasCookie) {
-                zipFile.delete();
+                com.coara.oldbrowser.util.PublicStorageWriter.abort(context, target);
                 Toast.makeText(context, "Cookieが見つかりませんでした", Toast.LENGTH_SHORT).show();
                 return;
             }
-            Toast.makeText(context, "全タブのcookies.zipを保存しました\n" + zipFile.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            if (!com.coara.oldbrowser.util.PublicStorageWriter.finish(context, target)) {
+                Toast.makeText(context, "ZIP保存に失敗しました", Toast.LENGTH_LONG).show();
+                return;
+            }
+            Toast.makeText(context, "全タブのcookies.zipを保存しました\n" + target.displayPath, Toast.LENGTH_LONG).show();
         }
         private static List<CookieEntry> parseCookieString(String cookieString, String pageUrl) {
             List<CookieEntry> list = new ArrayList<>();

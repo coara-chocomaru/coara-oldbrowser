@@ -17,10 +17,29 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class DownloadHistoryManager {
     private static final Object HISTORY_LOCK = new Object();
+    private static final ConcurrentHashMap<Long, DownloadMonitor> DOWNLOAD_MONITORS = new ConcurrentHashMap<>();
+    private static final ScheduledThreadPoolExecutor MONITOR_EXECUTOR = createMonitorExecutor();
+
+    private static ScheduledThreadPoolExecutor createMonitorExecutor() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(2, runnable -> {
+            Thread thread = new Thread(runnable, "CoaraDownloadMonitor");
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.setKeepAliveTime(30L, TimeUnit.SECONDS);
+        executor.allowCoreThreadTimeOut(true);
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
 
     public static void addDownloadHistory(Context context, long downloadId, String fileName, String filePath) {
         addDownloadHistory(context, downloadId, fileName, filePath, null, null, false);
@@ -470,88 +489,135 @@ public class DownloadHistoryManager {
     private static final long PENDING_STALL_TIMEOUT_MS = 90 * 1000;
     private static final long MONITOR_MAX_DURATION_MS = 2L * 60 * 60 * 1000;
 
+    private static final class DownloadMonitor {
+        final Context context;
+        final DownloadManager downloadManager;
+        final long downloadId;
+        final long startTime = SystemClock.elapsedRealtime();
+        volatile ScheduledFuture<?> future;
+        long pendingSince = -1L;
+        int consecutiveQueryErrors;
+
+        DownloadMonitor(Context context, DownloadManager downloadManager, long downloadId) {
+            this.context = context;
+            this.downloadManager = downloadManager;
+            this.downloadId = downloadId;
+        }
+    }
+
     public static void monitorDownloadProgress(Context context, long downloadId, DownloadManager dm) {
-        Thread worker = new Thread(() -> {
-            long lastProgressTime = SystemClock.elapsedRealtime();
-            long lastBytes = -1;
-            long startTime = SystemClock.elapsedRealtime();
-            long pendingSince = -1;
-            int consecutiveQueryErrors = 0;
-            while (!Thread.currentThread().isInterrupted()) {
-                DownloadManager.Query query = new DownloadManager.Query();
-                query.setFilterById(downloadId);
-                try (Cursor cursor = dm.query(query)) {
-                    consecutiveQueryErrors = 0;
-                    if (cursor == null || !cursor.moveToFirst()) {
-                        break;
-                    }
-                    long bytesDownloaded = safeGetLong(cursor, DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
-                    int status = safeGetInt(cursor, DownloadManager.COLUMN_STATUS);
-
-                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                        String localUri = safeGetString(cursor, DownloadManager.COLUMN_LOCAL_URI);
-                        String title = safeGetString(cursor, DownloadManager.COLUMN_TITLE);
-                        String mimeType = safeGetString(cursor, DownloadManager.COLUMN_MEDIA_TYPE);
-                        if (DownloadSupport.isSuspiciousDownloadedFile(context, localUri, title, mimeType)) {
-                            DownloadFallbackManager.onSuspiciousSuccessfulDownload(context, dm, downloadId, localUri);
-                            break;
-                        }
-                        saveDownloadManagerStatus(context, downloadId, status, bytesDownloaded,
-                                safeGetLong(cursor, DownloadManager.COLUMN_TOTAL_SIZE_BYTES), localUri);
-                        DownloadFallbackManager.clear(downloadId);
-                        DownloadFallbackManager.postCompleteNotification(context, downloadId, title);
-                        break;
-                    }
-                    if (status == DownloadManager.STATUS_FAILED) {
-                        int reason = safeGetInt(cursor, DownloadManager.COLUMN_REASON);
-                        if (DownloadFallbackManager.shouldFallback(reason)) {
-                            DownloadFallbackManager.onDownloadManagerFailure(context, dm, downloadId, reason);
-                        } else {
-                            saveDownloadManagerStatus(context, downloadId, status, bytesDownloaded,
-                                    safeGetLong(cursor, DownloadManager.COLUMN_TOTAL_SIZE_BYTES),
-                                    safeGetString(cursor, DownloadManager.COLUMN_LOCAL_URI));
-                            DownloadFallbackManager.clear(downloadId);
-                            postToast(context, describeFailureReason(reason));
-                        }
-                        break;
-                    }
-
-                    if (status == DownloadManager.STATUS_PENDING) {
-                        if (pendingSince < 0) {
-                            pendingSince = SystemClock.elapsedRealtime();
-                        } else if (SystemClock.elapsedRealtime() - pendingSince > PENDING_STALL_TIMEOUT_MS) {
-                            DownloadFallbackManager.onPendingTimeout(context, dm, downloadId);
-                            break;
-                        }
-                    } else {
-                        pendingSince = -1;
-                    }
-
-                    if (bytesDownloaded != lastBytes) {
-                        lastBytes = bytesDownloaded;
-                        lastProgressTime = SystemClock.elapsedRealtime();
-                    }
-
-                    if (SystemClock.elapsedRealtime() - startTime > MONITOR_MAX_DURATION_MS) {
-                        break;
-                    }
-                } catch (Exception e) {
-                    consecutiveQueryErrors++;
-                    if (consecutiveQueryErrors >= 8) {
-                        break;
-                    }
-                }
-
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+        if (context == null || downloadId <= 0L) {
+            return;
+        }
+        Context appContext = context.getApplicationContext();
+        if (appContext == null) {
+            appContext = context;
+        }
+        DownloadManager appDownloadManager = (DownloadManager) appContext.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (appDownloadManager == null) {
+            appDownloadManager = dm;
+        }
+        if (appDownloadManager == null) {
+            return;
+        }
+        DownloadMonitor monitor = new DownloadMonitor(appContext, appDownloadManager, downloadId);
+        if (DOWNLOAD_MONITORS.putIfAbsent(downloadId, monitor) != null) {
+            return;
+        }
+        try {
+            ScheduledFuture<?> future = MONITOR_EXECUTOR.scheduleWithFixedDelay(
+                    () -> pollDownloadProgress(monitor), 0L, 1L, TimeUnit.SECONDS);
+            monitor.future = future;
+            if (DOWNLOAD_MONITORS.get(downloadId) != monitor) {
+                future.cancel(false);
             }
-        }, "DownloadMonitor-" + downloadId);
-        worker.setDaemon(true);
-        worker.start();
+        } catch (RejectedExecutionException e) {
+            DOWNLOAD_MONITORS.remove(downloadId, monitor);
+        }
+    }
+
+    private static void pollDownloadProgress(DownloadMonitor monitor) {
+        if (monitor == null || DOWNLOAD_MONITORS.get(monitor.downloadId) != monitor) {
+            return;
+        }
+        DownloadManager.Query query = new DownloadManager.Query();
+        query.setFilterById(monitor.downloadId);
+        try (Cursor cursor = monitor.downloadManager.query(query)) {
+            monitor.consecutiveQueryErrors = 0;
+            if (cursor == null || !cursor.moveToFirst()) {
+                finishDownloadMonitor(monitor);
+                return;
+            }
+            long bytesDownloaded = safeGetLong(cursor, DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
+            int status = safeGetInt(cursor, DownloadManager.COLUMN_STATUS);
+
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                String localUri = safeGetString(cursor, DownloadManager.COLUMN_LOCAL_URI);
+                String title = safeGetString(cursor, DownloadManager.COLUMN_TITLE);
+                String mimeType = safeGetString(cursor, DownloadManager.COLUMN_MEDIA_TYPE);
+                if (DownloadSupport.isSuspiciousDownloadedFile(monitor.context, localUri, title, mimeType)) {
+                    DownloadFallbackManager.onSuspiciousSuccessfulDownload(monitor.context,
+                            monitor.downloadManager, monitor.downloadId, localUri);
+                    finishDownloadMonitor(monitor);
+                    return;
+                }
+                saveDownloadManagerStatus(monitor.context, monitor.downloadId, status, bytesDownloaded,
+                        safeGetLong(cursor, DownloadManager.COLUMN_TOTAL_SIZE_BYTES), localUri);
+                DownloadFallbackManager.clear(monitor.downloadId);
+                DownloadFallbackManager.postCompleteNotification(monitor.context, monitor.downloadId, title);
+                finishDownloadMonitor(monitor);
+                return;
+            }
+
+            if (status == DownloadManager.STATUS_FAILED) {
+                int reason = safeGetInt(cursor, DownloadManager.COLUMN_REASON);
+                if (DownloadFallbackManager.shouldFallback(reason)) {
+                    DownloadFallbackManager.onDownloadManagerFailure(monitor.context,
+                            monitor.downloadManager, monitor.downloadId, reason);
+                } else {
+                    saveDownloadManagerStatus(monitor.context, monitor.downloadId, status, bytesDownloaded,
+                            safeGetLong(cursor, DownloadManager.COLUMN_TOTAL_SIZE_BYTES),
+                            safeGetString(cursor, DownloadManager.COLUMN_LOCAL_URI));
+                    DownloadFallbackManager.clear(monitor.downloadId);
+                    postToast(monitor.context, describeFailureReason(reason));
+                }
+                finishDownloadMonitor(monitor);
+                return;
+            }
+
+            if (status == DownloadManager.STATUS_PENDING) {
+                if (monitor.pendingSince < 0L) {
+                    monitor.pendingSince = SystemClock.elapsedRealtime();
+                } else if (SystemClock.elapsedRealtime() - monitor.pendingSince > PENDING_STALL_TIMEOUT_MS) {
+                    DownloadFallbackManager.onPendingTimeout(monitor.context,
+                            monitor.downloadManager, monitor.downloadId);
+                    finishDownloadMonitor(monitor);
+                    return;
+                }
+            } else {
+                monitor.pendingSince = -1L;
+            }
+
+            if (SystemClock.elapsedRealtime() - monitor.startTime > MONITOR_MAX_DURATION_MS) {
+                finishDownloadMonitor(monitor);
+            }
+        } catch (Exception e) {
+            monitor.consecutiveQueryErrors++;
+            if (monitor.consecutiveQueryErrors >= 8
+                    || SystemClock.elapsedRealtime() - monitor.startTime > MONITOR_MAX_DURATION_MS) {
+                finishDownloadMonitor(monitor);
+            }
+        }
+    }
+
+    private static void finishDownloadMonitor(DownloadMonitor monitor) {
+        if (monitor == null || !DOWNLOAD_MONITORS.remove(monitor.downloadId, monitor)) {
+            return;
+        }
+        ScheduledFuture<?> future = monitor.future;
+        if (future != null) {
+            future.cancel(false);
+        }
     }
 
     private static String describeFailureReason(int reason) {

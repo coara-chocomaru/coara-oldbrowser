@@ -30,7 +30,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-
 import com.coara.oldbrowser.widget.FloatingActionButton;
 
 import java.io.BufferedOutputStream;

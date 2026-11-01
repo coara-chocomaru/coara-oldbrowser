@@ -79,7 +79,7 @@ public class BrowserApplication extends Application {
             try {
                 writeCrashLog(thread, throwable);
             } catch (Throwable ignored) {
-                
+
             }
             try {
                 com.coara.oldbrowser.plugin.PluginManager.onAppCrash(thread, throwable);
@@ -113,7 +113,7 @@ public class BrowserApplication extends Application {
             throwable.printStackTrace(new PrintWriter(sw));
             pw.println(sw);
         } catch (Exception ignored) {
-            
+
         }
     }
 
@@ -125,7 +125,7 @@ public class BrowserApplication extends Application {
         java.util.Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
         int toDelete = files.length - MAX_CRASH_LOGS + 1;
         for (int i = 0; i < toDelete && i < files.length; i++) {
-            
+
             files[i].delete();
         }
     }

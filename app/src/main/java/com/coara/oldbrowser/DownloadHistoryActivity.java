@@ -690,7 +690,6 @@ public class DownloadHistoryActivity extends Activity {
         }
     }
 
-
     private void openFileWithApp(Context ctx, DownloadItem item) {
         if (item == null || !itemExists(item)) {
             Toast.makeText(ctx, "ファイルが見つかりません", Toast.LENGTH_SHORT).show();

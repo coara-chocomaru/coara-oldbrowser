@@ -3,7 +3,6 @@ package com.coara.oldbrowser;
 import android.os.Bundle;
 import android.view.WindowManager;
 
-
 public final class SecretTouchpadActivity extends TouchpadActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {

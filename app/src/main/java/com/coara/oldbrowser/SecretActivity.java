@@ -424,7 +424,7 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
             swipeRefreshLayout.setOnChildScrollUpCallback((parent1, child) -> true);
             swipeRefreshLayout.setOnRefreshListener(() -> { });
         }
-            
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             permissionLauncher = resultRegistry.forPermission(isGranted -> {
                     if (!isGranted) {
@@ -479,15 +479,16 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
         }
     );
         fileChooserLauncher = resultRegistry.forIntent(result -> {
-                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                        Uri dataUri = result.getData().getData();
-                        if (filePathCallback != null) {
-                            filePathCallback.onReceiveValue(dataUri != null ? new Uri[]{dataUri} : null);
-                        }
-                    } else if (filePathCallback != null) {
-                        filePathCallback.onReceiveValue(null);
-                    }
+                    ValueCallback<Uri[]> callback = filePathCallback;
                     filePathCallback = null;
+                    if (callback != null) {
+                        Uri[] picked = null;
+                        try {
+                            picked = WebChromeClient.FileChooserParams.parseResult(result.getResultCode(), result.getData());
+                        } catch (Exception ignored) {
+                        }
+                        callback.onReceiveValue(picked);
+                    }
                 });
 
         urlEditText.setOnEditorActionListener((textView, actionId, keyEvent) -> {
@@ -551,7 +552,6 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
         cookieManager.removeAllCookies(null);
         cookieManager.flush();
      }
-
 
     private final Runnable reloadOpenTabsForPluginsRunnable = new Runnable() {
         @Override
@@ -737,6 +737,14 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
 
     @Override
     protected void onDestroy() {
+        ValueCallback<Uri[]> pendingChooser = filePathCallback;
+        filePathCallback = null;
+        if (pendingChooser != null) {
+            try {
+                pendingChooser.onReceiveValue(null);
+            } catch (Exception ignored) {
+            }
+        }
         PageTranslator.release();
         if (findController != null) {
             findController.release();
@@ -756,6 +764,21 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
             SafeBrowsingSupport.clear(current);
             try {
                 current.stopLoading();
+                current.clearHistory();
+                current.clearFormData();
+                current.clearCache(true);
+            } catch (Exception ignored) {
+            }
+            try {
+                WebStorage.getInstance().deleteAllData();
+                CookieManager secretCookies = CookieManager.getInstance();
+                secretCookies.removeAllCookies(null);
+                secretCookies.flush();
+                WebViewDatabase.getInstance(this).clearFormData();
+                BasicAuthManager.clear(SecretActivity.this);
+            } catch (Exception ignored) {
+            }
+            try {
                 current.destroy();
             } catch (Exception ignored) {
             }
@@ -766,7 +789,6 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
         backgroundExecutor.shutdown();
         super.onDestroy();
     }
-
 
     private void injectLazyLoading(WebView webView) {
         WebViewOptimizationUtils.injectLazyLoading(webView);
@@ -801,7 +823,7 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
             settings.setOffscreenPreRaster(false);
         }
         com.coara.oldbrowser.webview.WebViewOptimizationUtils.applyForceDark(settings, darkModeEnabled);
-        
+
     }
     private void applyRendererPriority(WebView view, boolean foreground) {
         if (view == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -813,8 +835,17 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
         }
     }
 
+    private boolean staleCacheCleared;
+
     private WebView createNewWebView() {
         KeyboardGameWebView webView = new KeyboardGameWebView(this);
+        if (!staleCacheCleared) {
+            staleCacheCleared = true;
+            try {
+                webView.clearCache(true);
+            } catch (Exception ignored) {
+            }
+        }
         applyRendererPriority(webView, true);
         webView.setForceNoCacheOnNavigation(true);
         KeyboardSettings.configureWebView(webView, pref);
@@ -835,7 +866,7 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
         }
-        
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
         if (sSetSaveFormDataMethod != null) {
             try {
@@ -1112,6 +1143,9 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
             }
             @Override
             public void onPageFinished(WebView view, String url) {
+                if (url == null) {
+                    url = "";
+                }
                 com.coara.oldbrowser.webview.WebViewOptimizationUtils.refreshNativeBridgeToken(view);
                 DocumentScripts.runFallback(view);
                 loadedPages.add(view);
@@ -1197,6 +1231,13 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
             @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback,
                                                FileChooserParams fileChooserParams) {
+                ValueCallback<Uri[]> previousCallback = SecretActivity.this.filePathCallback;
+                if (previousCallback != null && previousCallback != filePathCallback) {
+                    try {
+                        previousCallback.onReceiveValue(null);
+                    } catch (Exception ignored) {
+                    }
+                }
                 SecretActivity.this.filePathCallback = filePathCallback;
                 try {
                     fileChooserLauncher.launch(fileChooserParams.createIntent());
@@ -1434,12 +1475,15 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
             target.stopLoading();
         } catch (Exception ignored) {
         }
+        TouchpadController.clearCurrentWebView(target);
+        webViewContainer.removeView(target);
         releaseBlobBridge(target);
+        originalUserAgents.remove(target);
+        clearPendingSpaHistory(target);
         try {
             target.destroy();
         } catch (Exception ignored) {
         }
-        webViewContainer.removeView(target);
         webView = createNewWebView();
         webViewContainer.addView(webView);
         webView.loadUrl(START_PAGE);
@@ -1600,6 +1644,10 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
                 Toast.makeText(SecretActivity.this, "無効なデータURL", Toast.LENGTH_SHORT).show();
                 return;
             }
+            if (imageUrl.length() > 48 * 1024 * 1024) {
+                Toast.makeText(SecretActivity.this, "データが大きすぎます", Toast.LENGTH_SHORT).show();
+                return;
+            }
             String metadata = imageUrl.substring(5, commaIndex); 
             boolean isBase64 = metadata.contains("base64");
             String mimeType = "image/*";
@@ -1626,15 +1674,20 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
             } else if (mimeType.equalsIgnoreCase("image/img")) {
                 fileName += ".img";
             }
-            File picturesDir = Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_PICTURES);
-            File file = new File(picturesDir, fileName);
-            try (FileOutputStream fos = new FileOutputStream(file)) {
-                fos.write(imageData);
-                fos.flush();
+            com.coara.oldbrowser.util.PublicStorageWriter.Target target =
+                com.coara.oldbrowser.util.PublicStorageWriter.openPicturesTarget(SecretActivity.this, fileName, mimeType.indexOf('*') >= 0 ? null : mimeType);
+            try {
+                target.outputStream.write(imageData);
+                target.outputStream.flush();
+            } catch (IOException e) {
+                com.coara.oldbrowser.util.PublicStorageWriter.abort(SecretActivity.this, target);
+                throw e;
+            }
+            if (!com.coara.oldbrowser.util.PublicStorageWriter.finish(SecretActivity.this, target)) {
+                throw new IOException("finish failed");
             }
             Toast.makeText(SecretActivity.this,
-                "画像の保存が完了しました\n保存先: " + file.getAbsolutePath(),
+                "画像の保存が完了しました\n保存先: " + target.displayPath,
                 Toast.LENGTH_LONG).show();
             return;
         }
@@ -1681,29 +1734,28 @@ public class SecretActivity extends Activity implements PluginHost, PluginManage
 }
     private void exportBookmarksToFile() {
         final String bookmarksJson = pref.getString(KEY_BOOKMARKS, "[]");
-        File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (!downloadDir.exists()) {
-            downloadDir.mkdirs();
-        }
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-        final File file;
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            file = new File(downloadDir, "JSON-bookmark" + timeStamp + ".txt");
-        } else {
-            file = new File(downloadDir, timeStamp + "-bookmark.json");
-        }
+        final boolean legacyName = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q;
+        final String exportName = legacyName ? "JSON-bookmark" + timeStamp + ".txt" : timeStamp + "-bookmark.json";
         backgroundExecutor.execute(() -> {
-            try (FileOutputStream fos = new FileOutputStream(file)) {
-                fos.write(bookmarksJson.getBytes("UTF-8"));
-                fos.flush();
+            com.coara.oldbrowser.util.PublicStorageWriter.Target target = null;
+            try {
+                target = com.coara.oldbrowser.util.PublicStorageWriter.openDownloadsTarget(
+                    SecretActivity.this, exportName, legacyName ? "text/plain" : "application/json");
+                target.outputStream.write(bookmarksJson.getBytes("UTF-8"));
+                target.outputStream.flush();
+                if (!com.coara.oldbrowser.util.PublicStorageWriter.finish(SecretActivity.this, target)) {
+                    throw new IOException("finish failed");
+                }
+                final String savedPath = target.displayPath;
                 runOnUiThread(() ->
-                    Toast.makeText(SecretActivity.this, "ブックマークをエクスポートしました: " + file.getAbsolutePath(), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(SecretActivity.this, "ブックマークをエクスポートしました: " + savedPath, Toast.LENGTH_SHORT).show()
                 );
             } catch (Exception e) {
+                com.coara.oldbrowser.util.PublicStorageWriter.abort(SecretActivity.this, target);
                 runOnUiThread(() ->
                     Toast.makeText(SecretActivity.this, "ブックマークのエクスポートに失敗しました: " + e.getMessage(), Toast.LENGTH_SHORT).show()
                 );
-                e.printStackTrace();
             }
         });
     }
@@ -2373,6 +2425,9 @@ private class AndroidBridge {
     }
 
     private void applyNegapoji() {
+        if (getCurrentWebView() == null) {
+            return;
+        }
         String js = "javascript:(function() {" +
                 "document.documentElement.style.filter = 'invert(1)';" +
                 "var media = document.getElementsByTagName('img');" +
@@ -2470,24 +2525,18 @@ private class AndroidBridge {
 private void saveScreenshot(Bitmap bitmap) {
     backgroundExecutor.execute(() -> {
         try {
-            File screenshotDir = new File(Environment.getExternalStorageDirectory(), "DCIM/Screenshot");
-            if (!screenshotDir.exists()) {
-                screenshotDir.mkdirs();
-            }
-            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-            String fileName = timeStamp + ".png";
-            File screenshotFile = new File(screenshotDir, fileName);
-            try (FileOutputStream fos = new FileOutputStream(screenshotFile)) {
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
-                fos.flush();
-            }
+            final String savedPath = com.coara.oldbrowser.util.ScreenshotSaver.save(SecretActivity.this, bitmap, 100);
             runOnUiThread(() ->
-                Toast.makeText(SecretActivity.this, "スクリーンショットを保存しました: " + screenshotFile.getAbsolutePath(), Toast.LENGTH_LONG).show()
+                Toast.makeText(SecretActivity.this, "スクリーンショットを保存しました: " + savedPath, Toast.LENGTH_LONG).show()
             );
         } catch (Exception e) {
             runOnUiThread(() ->
                 Toast.makeText(SecretActivity.this, "スクリーンショット保存中にエラー: " + e.getMessage(), Toast.LENGTH_LONG).show()
             );
+        } finally {
+            if (!bitmap.isRecycled()) {
+                bitmap.recycle();
+            }
         }
     });
 }
@@ -2646,7 +2695,6 @@ private void saveScreenshot(Bitmap bitmap) {
             }
         });
     }
-
 
     private void showBookmarksManagementDialog() {
         if (bookmarks.isEmpty()) {
@@ -2897,7 +2945,6 @@ private void addHistory(String url, String title) {
     private Bitmap fetchFavicon(String bookmarkUrl) {
         return com.coara.oldbrowser.util.FaviconLoader.fetch(bookmarkUrl);
     }
-
 
     private class BookmarkAdapter extends RecyclerView.Adapter<BookmarkAdapter.BookmarkViewHolder> {
         private final List<Bookmark> items;

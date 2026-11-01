@@ -10,7 +10,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.widget.Toast;
 
-
 import com.coara.oldbrowser.model.DownloadItem;
 import com.coara.oldbrowser.util.DownloadSupport;
 import com.coara.oldbrowser.util.FileOpenSupport;

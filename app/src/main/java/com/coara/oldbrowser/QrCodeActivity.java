@@ -42,7 +42,6 @@ import android.widget.Toast;
 
 import android.app.Activity;
 
-
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -240,7 +239,6 @@ public class QrCodeActivity extends Activity implements SurfaceHolder.Callback, 
         int width = parameters.getPreviewSize().width;
         int height = parameters.getPreviewSize().height;
 
-
         decodeTask = new AsyncTask<byte[], Void, String>() {
             @Override
             protected String doInBackground(byte[]... params) {
@@ -326,7 +324,7 @@ public class QrCodeActivity extends Activity implements SurfaceHolder.Callback, 
         resultText.setOnClickListener(v -> {
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(content));
             intent.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY | Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET); 
-        
+
             Intent chooserIntent = Intent.createChooser(intent, "ブラウザを選択");
             ComponentName excludeComponent = new ComponentName(getPackageName(), "com.coara.oldbrowser.MainActivity");
             chooserIntent.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, new ComponentName[]{excludeComponent});
@@ -695,7 +693,7 @@ public class QrCodeActivity extends Activity implements SurfaceHolder.Callback, 
     }
 
     private void clearCacheAndFinish() {
-        
+
         if (decodeTask != null) {
             decodeTask.cancel(true);
             decodeTask = null;
